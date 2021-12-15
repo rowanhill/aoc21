@@ -1,15 +1,7 @@
-#![feature(map_first_last)]
-#![feature(entry_insert)]
-
+use std::cmp::Ordering;
+use std::collections::BinaryHeap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-
-#[derive(Debug)]
-enum Node {
-    Unvisited,
-    Touched(u32),
-    Visited(u32),
-}
 
 fn main() {
     let reader = BufReader::new(File::open("input").expect("Could not read file"));
@@ -18,73 +10,10 @@ fn main() {
         line.chars().map(|c| c.to_digit(10).expect("Could not parse digit")).collect::<Vec<_>>()
     }).collect::<Vec<_>>();
 
-    let mut nodes_map = risks_map.iter().map(|row| {
-        row.iter().map(|_| Node::Unvisited).collect::<Vec<_>>()
-    }).collect::<Vec<_>>();
-    nodes_map[0][0] = Node::Touched(risks_map[0][0]);
-
-    let mut curr_node_coords = Some((0usize, 0usize));
-
-    let max_x = nodes_map[0].len() - 1;
-    let max_y = nodes_map.len() - 1;
-
-    while let Some((curr_x, curr_y)) = curr_node_coords {
-        let curr_dist = if curr_x == 0 && curr_y == 0 {
-            0
-        } else {
-            let curr_node = &nodes_map[curr_y][curr_x];
-            match curr_node {
-                Node::Touched(d) => *d,
-                _ => panic!(),
-            }
-        };
-
-        // println!("({}, {}): {}", curr_x, curr_y, curr_dist);
-
-        for (dx, dy) in [(0, -1), (-1, 0), (1, 0), (0, 1)] {
-            let x = curr_x as i32 + dx;
-            let y = curr_y as i32 + dy;
-
-            if x >= 0 && x < risks_map[0].len() as i32 && y >= 0 && y < risks_map.len() as i32 {
-                let x = x as usize;
-                let y = y as usize;
-
-                let risk = risks_map[y][x];
-
-                if let &Node::Touched(other_dist) = &nodes_map[y][x] {
-                    if other_dist > curr_dist + risk {
-                        nodes_map[y][x] = Node::Touched(curr_dist + risk);
-                        // println!("  ({}, {}): {}", x, y, curr_dist + risk);
-                    }
-                } else if let Node::Unvisited = &nodes_map[y][x] {
-                    nodes_map[y][x] = Node::Touched(curr_dist + risk);
-                    // println!("  ({}, {}): {}*", x, y, curr_dist + risk);
-                }
-            }
-        }
-
-        nodes_map[curr_y][curr_x] = Node::Visited(curr_dist);
-
-        if curr_x == max_x && curr_y == max_y {
-            break;
-        }
-
-        // Find the next Touched node with lowest distance
-        curr_node_coords = nodes_map.iter().enumerate()
-            .flat_map(|(row_index, row)| {
-                row.iter().enumerate().map(|(node_index, node)| ((node_index, row_index), node)).collect::<Vec<_>>()
-            })
-            .filter_map(|(coord, node)| {
-                match node {
-                    Node::Touched(dist) => Some((coord, dist)),
-                    _ => None,
-                }
-            })
-            .min_by_key(|(_coord, dist)| **dist)
-            .map(|(coord, _dist)| coord);
-    }
-
-    println!("Part 1: {:?}", &nodes_map[max_y][max_x]);
+    let max_x = risks_map[0].len() - 1;
+    let max_y = risks_map.len() - 1;
+    let part1 = shortest_path(&risks_map, (0, 0), (max_x, max_y));
+    println!("Part 1: {:?}", part1);
 
 
     let big_risks_map: Vec<Vec<u32>> = [0,1,2,3,4].into_iter().flat_map(|y_repeat| {
@@ -95,71 +24,88 @@ fn main() {
         }).collect::<Vec<_>>()
     }).collect::<Vec<_>>();
 
-    let mut big_nodes_map = big_risks_map.iter().map(|row| {
-        row.iter().map(|_| Node::Unvisited).collect::<Vec<_>>()
-    }).collect::<Vec<_>>();
-    big_nodes_map[0][0] = Node::Touched(big_risks_map[0][0]);
+    let max_x = big_risks_map[0].len() - 1;
+    let max_y = big_risks_map.len() - 1;
+    let part2 = shortest_path(&big_risks_map, (0, 0), (max_x, max_y));
+    println!("Part 2: {:?}", part2);
+}
 
-    let mut curr_node_coords = Some((0usize, 0usize));
+#[derive(Copy, Clone, Eq, PartialEq)]
+struct State {
+    cost: u32,
+    position: (usize, usize),
+}
 
-    let max_x = big_nodes_map[0].len() - 1;
-    let max_y = big_nodes_map.len() - 1;
+// The priority queue depends on `Ord`.
+// Explicitly implement the trait so the queue becomes a min-heap
+// instead of a max-heap.
+impl Ord for State {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // Notice that the we flip the ordering on costs.
+        // In case of a tie we compare positions - this step is necessary
+        // to make implementations of `PartialEq` and `Ord` consistent.
+        other.cost.cmp(&self.cost)
+            .then_with(|| self.position.cmp(&other.position))
+    }
+}
 
-    while let Some((curr_x, curr_y)) = curr_node_coords {
-        let curr_dist = if curr_x == 0 && curr_y == 0 {
-            0
-        } else {
-            let curr_node = &big_nodes_map[curr_y][curr_x];
-            match curr_node {
-                Node::Touched(d) => *d,
-                _ => panic!(),
-            }
-        };
+// `PartialOrd` needs to be implemented as well.
+impl PartialOrd for State {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
 
-        // println!("({}, {}): {}", curr_x, curr_y, curr_dist);
+// Dijkstra's shortest path algorithm.
 
-        for (dx, dy) in [(0, -1), (-1, 0), (1, 0), (0, 1)] {
-            let x = curr_x as i32 + dx;
-            let y = curr_y as i32 + dy;
+// Start at `start` and use `dist` to track the current shortest distance
+// to each node. This implementation isn't memory-efficient as it may leave duplicate
+// nodes in the queue. It also uses `usize::MAX` as a sentinel value,
+// for a simpler implementation.
+fn shortest_path(entry_cost_map: &Vec<Vec<u32>>, start: (usize, usize), goal: (usize, usize)) -> Option<u32> {
+    // dist[node] = current shortest distance from `start` to `node`
+    let mut dist = entry_cost_map.iter()
+        .map(|row| (0..row.len()).map(|_| u32::MAX).collect())
+        .collect::<Vec<Vec<_>>>();
 
-            if x >= 0 && x < big_risks_map[0].len() as i32 && y >= 0 && y < big_risks_map.len() as i32 {
+    let mut heap = BinaryHeap::new();
+
+    // We're at `start`, with a zero cost
+    dist[start.1][start.0] = 0;
+    heap.push(State { cost: 0, position: start });
+
+    // Examine the frontier with lower cost nodes first (min-heap)
+    while let Some(State { cost, position }) = heap.pop() {
+        // Alternatively we could have continued to find all shortest paths
+        if position == goal {
+            return Some(cost);
+        }
+
+        // Important as we may have already found a better way
+        if cost > dist[position.1][position.0] { continue; }
+
+        for (dx, dy) in [(0, -1), (1, 0), (0, 1), (-1, 0)] {
+            let x = position.0 as i32 + dx;
+            let y = position.1 as i32 + dy;
+
+            if x >= 0 && x < entry_cost_map[0].len() as i32 && y >= 0 && y < entry_cost_map.len() as i32 {
                 let x = x as usize;
                 let y = y as usize;
 
-                let risk = big_risks_map[y][x];
+                let entry_cost = &entry_cost_map[y][x];
 
-                if let &Node::Touched(other_dist) = &big_nodes_map[y][x] {
-                    if other_dist > curr_dist + risk {
-                        big_nodes_map[y][x] = Node::Touched(curr_dist + risk);
-                        // println!("  ({}, {}): {}", x, y, curr_dist + risk);
-                    }
-                } else if let Node::Unvisited = &big_nodes_map[y][x] {
-                    big_nodes_map[y][x] = Node::Touched(curr_dist + risk);
-                    // println!("  ({}, {}): {}*", x, y, curr_dist + risk);
+                let next = State { cost: cost + entry_cost, position: (x, y) };
+
+                // If so, add it to the frontier and continue
+                if next.cost < dist[y][x] {
+                    heap.push(next);
+                    // Relaxation, we have now found a better way
+                    dist[y][x] = next.cost;
                 }
             }
         }
-
-        big_nodes_map[curr_y][curr_x] = Node::Visited(curr_dist);
-
-        if curr_x == max_x && curr_y == max_y {
-            break;
-        }
-
-        // Find the next Touched node with lowest distance
-        curr_node_coords = big_nodes_map.iter().enumerate()
-            .flat_map(|(row_index, row)| {
-                row.iter().enumerate().map(|(node_index, node)| ((node_index, row_index), node)).collect::<Vec<_>>()
-            })
-            .filter_map(|(coord, node)| {
-                match node {
-                    Node::Touched(dist) => Some((coord, dist)),
-                    _ => None,
-                }
-            })
-            .min_by_key(|(_coord, dist)| **dist)
-            .map(|(coord, _dist)| coord);
     }
 
-    println!("Part 2: {:?}", &big_nodes_map[max_y][max_x]);
+    // Goal not reachable
+    None
 }
