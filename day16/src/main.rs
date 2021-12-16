@@ -1,4 +1,40 @@
 use bitvec::prelude::*;
+use num::Integer;
+
+struct BitSliceReader<'a> {
+    bit_slice: &'a BitSlice<Msb0, u8>,
+    cur_bit: usize,
+}
+impl <'a> BitSliceReader<'a> {
+    fn new(input: &[u8]) -> BitSliceReader {
+        let bit_slice = BitSlice::<Msb0, u8>::from_slice(input)
+            .expect("Could not parse to BitSlice");
+        BitSliceReader {
+            bit_slice,
+            cur_bit: 0,
+        }
+    }
+
+    fn read_bits<N: Integer + PartialOrd + Copy>(&mut self, num_bits: usize) -> N {
+        let result: N = (self.cur_bit..(self.cur_bit+num_bits)).into_iter()
+            .fold(N::zero(), |acc, bit_index| {
+                let b = self.bit_slice[bit_index];
+                let mut result = acc * (N::one() + N::one());
+                if b {
+                    result = result + N::one();
+                }
+                result
+            });
+        self.cur_bit += num_bits;
+        result
+    }
+
+    fn read_bool(&mut self) -> bool {
+        let result = self.bit_slice[self.cur_bit];
+        self.cur_bit += 1;
+        result
+    }
+}
 
 #[derive(Eq, PartialEq, Debug)]
 struct Header {
@@ -84,15 +120,12 @@ impl Packet {
 }
 
 struct PacketParser<'a> {
-    bit_slice: &'a BitSlice<Msb0, u8>,
-    cur_bit: usize,
+    bit_slice_reader: BitSliceReader<'a>
 }
 impl <'a> PacketParser<'a> {
     fn new(input: &[u8]) -> PacketParser {
-        let bit_slice = BitSlice::<Msb0, u8>::from_slice(input).expect("Could not parse to BitSlice");
         PacketParser {
-            bit_slice,
-            cur_bit: 0,
+            bit_slice_reader: BitSliceReader::new(input)
         }
     }
 
@@ -107,8 +140,8 @@ impl <'a> PacketParser<'a> {
     }
 
     fn header(&mut self) -> Header {
-        let version_byte = self.read_u8(3);
-        let type_byte = self.read_u8(3);
+        let version_byte = self.bit_slice_reader.read_bits(3);
+        let type_byte = self.bit_slice_reader.read_bits(3);
         Header { packet_version: version_byte, packet_type: type_byte }
     }
 
@@ -117,17 +150,17 @@ impl <'a> PacketParser<'a> {
         let mut result = 0;
 
         while should_continue {
-            should_continue = self.read_bool();
-            let byte = self.read_u8(4);
+            should_continue = self.bit_slice_reader.read_bool();
+            let byte: u128 = self.bit_slice_reader.read_bits(4);
             result *= 16;
-            result += byte as u128;
+            result += byte;
         }
 
         Packet::Literal(header, result)
     }
 
     fn operator_packet(&mut self, header: Header) -> Packet {
-        let is_length_type_1 = self.read_bool();
+        let is_length_type_1 = self.bit_slice_reader.read_bool();
         if is_length_type_1 {
             self.operator_packet_length_type_1(header)
         } else {
@@ -136,11 +169,11 @@ impl <'a> PacketParser<'a> {
     }
 
     fn operator_packet_length_type_0(&mut self, header: Header) -> Packet {
-        let subpackets_bit_length = self.read_u16(15);
-        let terminate_at = self.cur_bit + subpackets_bit_length as usize;
+        let subpackets_bit_length: u16 = self.bit_slice_reader.read_bits(15);
+        let terminate_at = self.bit_slice_reader.cur_bit + subpackets_bit_length as usize;
 
         let mut subpackets = vec![];
-        while self.cur_bit < terminate_at {
+        while self.bit_slice_reader.cur_bit < terminate_at {
             subpackets.push(self.packet())
         }
 
@@ -148,7 +181,7 @@ impl <'a> PacketParser<'a> {
     }
 
     fn operator_packet_length_type_1(&mut self, header: Header) -> Packet {
-        let num_subpackets = self.read_u16(11);
+        let num_subpackets: u16 = self.bit_slice_reader.read_bits(11);
 
         let mut subpackets = vec![];
         for _ in 0..num_subpackets {
@@ -156,40 +189,6 @@ impl <'a> PacketParser<'a> {
         }
 
         Packet::Operator(header, subpackets)
-    }
-
-    fn read_u8(&mut self, num_bits: usize) -> u8 {
-        let result = (self.cur_bit..(self.cur_bit+num_bits)).into_iter()
-            .fold(0u8, |mut acc, bit_index| {
-                let b = self.bit_slice[bit_index];
-                acc *= 2;
-                if b {
-                    acc += 1;
-                }
-                acc
-            });
-        self.cur_bit += num_bits;
-        result
-    }
-
-    fn read_u16(&mut self, num_bits: usize) -> u16 {
-        let result = (self.cur_bit..(self.cur_bit+num_bits)).into_iter()
-            .fold(0u16, |mut acc, bit_index| {
-                let b = self.bit_slice[bit_index];
-                acc *= 2;
-                if b {
-                    acc += 1;
-                }
-                acc
-            });
-        self.cur_bit += num_bits;
-        result
-    }
-
-    fn read_bool(&mut self) -> bool {
-        let result = self.bit_slice[self.cur_bit];
-        self.cur_bit += 1;
-        result
     }
 }
 
