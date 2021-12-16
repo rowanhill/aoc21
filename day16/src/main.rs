@@ -66,56 +66,65 @@ impl Packet {
     fn value(&self) -> u128 {
         match self {
             Packet::Literal(_, v) => *v,
-            Packet::Operator(header, subpackets) => {
-                match header.packet_type {
-                    0 => {
-                        subpackets.iter().map(|p| p.value()).sum::<u128>()
-                    },
-                    1 => {
-                        subpackets.iter().map(|p| p.value()).fold(1, |acc, v| acc * v)
-                    },
-                    2 => {
-                        // minimum
-                        subpackets.iter().map(|p| p.value()).min().unwrap()
-                    },
-                    3 => {
-                        // maximum
-                        subpackets.iter().map(|p| p.value()).max().unwrap()
-                    },
-                    5 => {
-                        // gt? 1 : 0
-                        let first = subpackets[0].value();
-                        let second = subpackets[1].value();
-                        if first > second {
-                            1
-                        } else {
-                            0
-                        }
-                    },
-                    6 => {
-                        // lt? 1 : 0
-                        let first = subpackets[0].value();
-                        let second = subpackets[1].value();
-                        if first < second {
-                            1
-                        } else {
-                            0
-                        }
-                    },
-                    7 => {
-                        // eq? 1 : 0
-                        let first = subpackets[0].value();
-                        let second = subpackets[1].value();
-                        if first == second {
-                            1
-                        } else {
-                            0
-                        }
-                    },
-                    _ => panic!()
-                }
+            Packet::Operator(h, subpackets) => {
+                ops::from(&h.packet_type)(subpackets)
             }
         }
+    }
+}
+
+mod ops {
+    use super::*;
+
+    pub(crate) fn from(packet_type: &u8) -> fn(&Vec<Packet>) -> u128 {
+        match packet_type {
+            0 => sum,
+            1 => product,
+            2 => minimum,
+            3 => maximum,
+            5 => greater_than,
+            6 => less_than,
+            7 => equal_to,
+            _ => panic!(),
+        }
+    }
+
+    fn sum(packets: &Vec<Packet>) -> u128 {
+        packets.iter().map(|p| p.value()).sum()
+    }
+
+    fn product(packets: &Vec<Packet>) -> u128 {
+        packets.iter().map(|p| p.value()).fold(1, |acc, v| acc * v)
+    }
+
+    fn minimum(packets: &Vec<Packet>) -> u128 {
+        packets.iter().map(|p| p.value()).min().unwrap()
+    }
+
+    fn maximum(packets: &Vec<Packet>) -> u128 {
+        packets.iter().map(|p| p.value()).max().unwrap()
+    }
+
+    fn greater_than(packets: &Vec<Packet>) -> u128 {
+        let (first, second) = get_two_packets(packets);
+        if first.value() > second.value() { 1 } else { 0 }
+    }
+
+    fn less_than(packets: &Vec<Packet>) -> u128 {
+        let (first, second) = get_two_packets(packets);
+        if first.value() < second.value() { 1 } else { 0 }
+    }
+
+    fn equal_to(packets: &Vec<Packet>) -> u128 {
+        let (first, second) = get_two_packets(packets);
+        if first.value() == second.value() { 1 } else { 0 }
+    }
+
+    fn get_two_packets(packets: &Vec<Packet>) -> (&Packet, &Packet) {
+        assert_eq!(packets.len(), 2);
+        let first = &packets[0];
+        let second = &packets[1];
+        (first, second)
     }
 }
 
@@ -161,14 +170,15 @@ impl <'a> PacketParser<'a> {
 
     fn operator_packet(&mut self, header: Header) -> Packet {
         let is_length_type_1 = self.bit_slice_reader.read_bool();
-        if is_length_type_1 {
-            self.operator_packet_length_type_1(header)
+        let subpackets = if is_length_type_1 {
+            self.operator_packet_length_type_1()
         } else {
-            self.operator_packet_length_type_0(header)
-        }
+            self.operator_packet_length_type_0()
+        };
+        Packet::Operator(header, subpackets)
     }
 
-    fn operator_packet_length_type_0(&mut self, header: Header) -> Packet {
+    fn operator_packet_length_type_0(&mut self) -> Vec<Packet> {
         let subpackets_bit_length: u16 = self.bit_slice_reader.read_bits(15);
         let terminate_at = self.bit_slice_reader.cur_bit + subpackets_bit_length as usize;
 
@@ -177,10 +187,10 @@ impl <'a> PacketParser<'a> {
             subpackets.push(self.packet())
         }
 
-        Packet::Operator(header, subpackets)
+        subpackets
     }
 
-    fn operator_packet_length_type_1(&mut self, header: Header) -> Packet {
+    fn operator_packet_length_type_1(&mut self) -> Vec<Packet> {
         let num_subpackets: u16 = self.bit_slice_reader.read_bits(11);
 
         let mut subpackets = vec![];
@@ -188,7 +198,7 @@ impl <'a> PacketParser<'a> {
             subpackets.push(self.packet())
         }
 
-        Packet::Operator(header, subpackets)
+        subpackets
     }
 }
 
