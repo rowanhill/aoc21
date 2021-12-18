@@ -1,26 +1,27 @@
 use std::fs::File;
 use std::io::{BufRead, BufReader};
+use typed_arena::Arena;
 use crate::snail_numbers::SnailNode;
 
 mod snail_numbers {
-    use crate::snail_numbers::explosive::Explosive;
+    use typed_arena::Arena;
+    use crate::snail_numbers::explosive::{ExplodeResult, Explosive};
     use crate::snail_numbers::splittable::Splittable;
 
     #[derive(PartialEq, Debug, Clone)]
-    pub(crate) enum SnailNode {
+    pub(crate) enum SnailNode<'a> {
         Literal(u32),
-        Pair(Box<SnailNode>, Box<SnailNode>),
+        Pair(&'a SnailNode<'a>, &'a SnailNode<'a>),
     }
 
-    impl SnailNode {
-        pub(crate) fn parse(input: &str) -> SnailNode {
-            parsing::parse_pair(&mut input.chars().peekable())
+    impl <'a> SnailNode<'a> {
+        pub(crate) fn parse(input: &str, arena: &'a Arena<SnailNode<'a>>) -> &'a SnailNode<'a> {
+            parsing::parse_pair(&mut input.chars().peekable(), arena)
         }
 
-        pub(crate) fn add(self, other: SnailNode) -> SnailNode {
-            let mut result = SnailNode::Pair(Box::new(self), Box::new(other));
-            result.reduce();
-            result
+        pub(crate) fn add(&'a self, other: &'a SnailNode<'a>, arena: &'a Arena<SnailNode<'a>>) -> &'a SnailNode<'a> {
+            let result = arena.alloc(SnailNode::Pair(self, other));
+            result.reduce(arena)
         }
 
         pub(crate) fn magnitude(&self) -> u32 {
@@ -32,33 +33,52 @@ mod snail_numbers {
             }
         }
 
-        fn reduce(&mut self) {
+        fn reduce(&'a self, arena: &'a Arena<SnailNode<'a>>) -> &'a SnailNode {
+            let mut result = self;
             loop {
-                let result = self.explode(0);
-                if result.is_none() {
-                    if !self.split() {
-                        // If we didn't explode and didn't split, we're fully reduced
-                        break;
+                result = match result.explode(0, arena) {
+                    ExplodeResult::Exploded(n, _) => {
+                        n
+                    },
+                    ExplodeResult::Unchanged => {
+                        let split_result = result.split(arena);
+                        let split_match_result = match split_result {
+                            Some(n) => {
+                                n
+                            },
+                            None => {
+                                break;
+                            }
+                        };
+                        split_match_result
                     }
                 }
             }
+            result
         }
     }
 
     pub(crate) mod explosive {
+        use typed_arena::Arena;
         use crate::SnailNode;
 
-        pub(crate) trait Explosive {
-            fn explode(&mut self, depth: u8) -> Option<(Option<u32>, Option<u32>)>;
+        type Remainder = (Option<u32>, Option<u32>);
+        pub(crate) enum ExplodeResult<'a> {
+            Exploded(&'a SnailNode<'a>, Remainder),
+            Unchanged
         }
 
-        impl Explosive for SnailNode {
+        pub(crate) trait Explosive<'a> {
+            fn explode(&'a self, depth: u8, arena: &'a Arena<SnailNode<'a>>) -> ExplodeResult<'a>;
+        }
+
+        impl <'a> Explosive<'a> for SnailNode<'a> {
             /*
             Checks for explosion in this subtree
 
-            Returns Some((_,_)) if the subtree exploded, or None if not
+            Returns Exploded(_,_) if the subtree exploded, or Unchanged if not
 
-            The values within the Some tuple are the literal values to be added to the nearest literal to
+            The values within the Exploded remainder tuple are the literal values to be added to the nearest literal to
             the left and to the right respectively. They start as Some(l) and Some(r), but once consumed
             (i.e. once added to a literal) they turn into None, to prevent them being added again further
             up the tree.
@@ -67,119 +87,142 @@ mod snail_numbers {
 
             Proceeds depth-first left-to-right.
             */
-            fn explode(&mut self, depth: u8) -> Option<(Option<u32>, Option<u32>)> {
+            fn explode(&'a self, depth: u8, arena: &'a Arena<SnailNode<'a>>) -> ExplodeResult {
                 match self {
-                    SnailNode::Literal(_) => Option::None,
+                    SnailNode::Literal(_) => ExplodeResult::Unchanged,
                     SnailNode::Pair(left, right) => {
                         if depth == 4 {
-                            // Swap out this node with a 0, return a Some result with left and right values to add
-                            // (Need to match again despite knowing it's a pair, now we've move the value out)
-                            match std::mem::replace(self, SnailNode::Literal(0)) {
-                                SnailNode::Literal(_) => panic!("Pair turned into literal"),
-                                SnailNode::Pair(left, right) => {
-                                    match (*left, *right) {
-                                        (SnailNode::Literal(lvalue), SnailNode::Literal(rvalue)) => {
-                                            Some((Some(lvalue), Some(rvalue)))
+                            match (left, right) {
+                                (SnailNode::Literal(lvalue), SnailNode::Literal(rvalue)) => {
+                                    ExplodeResult::Exploded(
+                                        arena.alloc(SnailNode::Literal(0)),
+                                        (Some(*lvalue), Some(*rvalue))
+                                    )
+                                },
+                                _ => panic!("Pair at depth 4 had non-literal children during explode")
+                            }
+                        } else {
+                            let left_result = left.explode(depth + 1, arena);
+                            match left_result {
+                                ExplodeResult::Exploded(new_left, remainder) => {
+                                    match remainder {
+                                        (lrem, Some(rrem)) => {
+                                            let new_right = right.add_to_leftmost_literal(rrem, arena);
+                                            let new_rem = (lrem, None);
+                                            ExplodeResult::Exploded(
+                                                arena.alloc(SnailNode::Pair(new_left, new_right)),
+                                                new_rem
+                                            )
+                                        },
+                                        (_, None) => {
+                                            ExplodeResult::Exploded(
+                                                arena.alloc(SnailNode::Pair(new_left, right)),
+                                                remainder
+                                            )
                                         }
-                                        _ => panic!("Pair at depth 4 had non-literal children during explode")
+                                    }
+                                }
+                                ExplodeResult::Unchanged => {
+                                    let right_result = right.explode(depth + 1, arena);
+                                    match right_result {
+                                        ExplodeResult::Exploded(new_right, remainder) => {
+                                            match remainder {
+                                                (Some(lrem), rrem) => {
+                                                    let new_left = left.add_to_rightmost_literal(lrem, arena);
+                                                    let new_rem = (None, rrem);
+                                                    ExplodeResult::Exploded(
+                                                        arena.alloc(SnailNode::Pair(new_left, new_right)),
+                                                        new_rem
+                                                    )
+                                                },
+                                                (None, _) => {
+                                                    ExplodeResult::Exploded(
+                                                        arena.alloc(SnailNode::Pair(left, new_right)),
+                                                        remainder
+                                                    )
+                                                }
+                                            }
+                                        }
+                                        ExplodeResult::Unchanged => ExplodeResult::Unchanged
                                     }
                                 }
                             }
-                        } else {
-                            // Check the left branch for explosion first.
-                            // If it does explode:
-                            //   - return the left-result up the chain (don't apply it immediately, that'll
-                            //     add it to the just-inserted 0)
-                            //   - add the right-result to the left-most literal on the right subtree
-                            //   - (by returning, implicitly avoid checking any further in the tree for
-                            //     explosion)
-                            // Else:
-                            //   - Check the right branch for explosion
-                            //   - If it does explode:
-                            //       - return the right-result up the chain
-                            //       - add the left-result to the right-most literal on the left subtree
-                            //   - Else the subtree from this node does not explode (so we return None)
-                            left.explode(depth + 1).and_then(|res| add_right(res, right))
-                                .or_else(|| right.explode(depth + 1).and_then(|res| add_left(res, left)))
                         }
                     }
                 }
             }
         }
 
-        trait ExplosivePrivate {
-            fn add_to_leftmost_literal(&mut self, value: u32);
-            fn add_to_rightmost_literal(&mut self, value: u32);
+        trait ExplosivePrivate<'a> {
+            fn add_to_leftmost_literal(&'a self, value: u32, arena: &'a Arena<SnailNode<'a>>) -> &'a SnailNode;
+            fn add_to_rightmost_literal(&'a self, value: u32, arena: &'a Arena<SnailNode<'a>>) -> &'a SnailNode;
         }
-        impl ExplosivePrivate for SnailNode {
-            fn add_to_leftmost_literal(&mut self, value: u32) {
+        impl <'a> ExplosivePrivate<'a> for SnailNode<'a> {
+            fn add_to_leftmost_literal(&'a self, value: u32, arena: &'a Arena<SnailNode<'a>>) -> &'a SnailNode<'a> {
                 match self {
                     SnailNode::Literal(v) => {
-                        *v += value;
+                        arena.alloc(SnailNode::Literal(*v + value))
                     }
-                    SnailNode::Pair(l, _) => {
-                        l.add_to_leftmost_literal(value);
+                    SnailNode::Pair(l, r) => {
+                        let new_left = l.add_to_leftmost_literal(value, arena);
+                        arena.alloc(SnailNode::Pair(new_left, r))
                     }
                 }
             }
 
-            fn add_to_rightmost_literal(&mut self, value: u32) {
+            fn add_to_rightmost_literal(&'a self, value: u32, arena: &'a Arena<SnailNode<'a>>) -> &'a SnailNode<'a> {
                 match self {
                     SnailNode::Literal(v) => {
-                        *v += value;
+                        arena.alloc(SnailNode::Literal(*v + value))
                     }
-                    SnailNode::Pair(_, r) => {
-                        r.add_to_rightmost_literal(value);
+                    SnailNode::Pair(l, r) => {
+                        let new_right = r.add_to_rightmost_literal(value, arena);
+                        arena.alloc(SnailNode::Pair(l, new_right))
                     }
                 }
             }
-        }
-
-        fn add_left(result: (Option<u32>, Option<u32>), left: &mut Box<SnailNode>) -> Option<(Option<u32>, Option<u32>)> {
-            let (lresult, rresult) = result;
-            Some((
-                lresult.and_then(|value| {
-                    left.add_to_rightmost_literal(value);
-                    None
-                }),
-                rresult
-            ))
-        }
-
-        fn add_right(result: (Option<u32>, Option<u32>), right: &mut Box<SnailNode>) -> Option<(Option<u32>, Option<u32>)> {
-            let (lresult, rresult) = result;
-            Some((
-                lresult,
-                rresult.and_then(|value| {
-                    right.add_to_leftmost_literal(value);
-                    None
-                })
-            ))
         }
     }
 
     pub(crate) mod splittable {
+        use typed_arena::Arena;
         use crate::SnailNode;
 
-        pub(crate) trait Splittable {
-            fn split(&mut self) -> bool;
+        pub(crate) trait Splittable<'a> {
+            fn split(&'a self, arena: &'a Arena<SnailNode<'a>>) -> Option<&'a SnailNode<'a>>;
         }
 
-        impl Splittable for SnailNode {
-            fn split(&mut self) -> bool {
+        impl <'a> Splittable<'a> for SnailNode<'a> {
+            fn split(&'a self, arena: &'a Arena<SnailNode<'a>>) -> Option<&'a SnailNode<'a>> {
                 match self {
                     SnailNode::Literal(v) => {
                         if *v >= 10 {
                             let left = *v / 2;
                             let right = *v - left;
-                            *self = SnailNode::Pair(Box::new(SnailNode::Literal(left)), Box::new(SnailNode::Literal(right)));
-                            true
+                            let left_node = arena.alloc(SnailNode::Literal(left));
+                            let right_node = arena.alloc(SnailNode::Literal(right));
+                            let node = arena.alloc(SnailNode::Pair(left_node, right_node));
+                            Some(node)
                         } else {
-                            false
+                            None
                         }
                     }
                     SnailNode::Pair(l, r) => {
-                        l.split() || r.split()
+                        match l.split(arena) {
+                            Some(new_left) => {
+                                let node = arena.alloc(SnailNode::Pair(new_left, r));
+                                Some(node)
+                            }
+                            None => {
+                                match r.split(arena) {
+                                    Some(new_right) => {
+                                        let node = arena.alloc(SnailNode::Pair(l, new_right));
+                                        Some(node)
+                                    },
+                                    None => None
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -189,29 +232,31 @@ mod snail_numbers {
     mod parsing {
         use std::iter::Peekable;
         use std::str::Chars;
+        use typed_arena::Arena;
         use crate::SnailNode;
 
-        pub(crate) fn parse_pair(chars: &mut Peekable<Chars>) -> SnailNode {
+        pub(crate) fn parse_pair<'a>(chars: &mut Peekable<Chars>, arena: &'a Arena<SnailNode<'a>>) -> &'a SnailNode<'a> {
             consume('[', chars);
-            let left = parse_node(chars);
+            let left = parse_node(chars, arena);
             consume(',', chars);
-            let right = parse_node(chars);
+            let right = parse_node(chars, arena);
             consume(']', chars);
-            SnailNode::Pair(Box::new(left), Box::new(right))
+            arena.alloc(SnailNode::Pair(left, right))
         }
 
-        fn parse_node(chars: &mut Peekable<Chars>) -> SnailNode {
+        fn parse_node<'a>(chars: &mut Peekable<Chars>, arena: &'a Arena<SnailNode<'a>>) -> &'a SnailNode<'a> {
             let start = chars.peek().expect("Could not peek node start char");
             match start {
-                '[' => parse_pair(chars),
-                '0'..='9' => parse_literal(chars),
+                '[' => parse_pair(chars, arena),
+                '0'..='9' => parse_literal(chars, arena),
                 _ => panic!("Unexpected node start char: {}", start)
             }
         }
 
-        fn parse_literal(chars: &mut Peekable<Chars>) -> SnailNode {
+        fn parse_literal<'a>(chars: &mut Peekable<Chars>, arena: &'a Arena<SnailNode<'a>>) -> &'a SnailNode<'a> {
             let num = chars.next().expect("Could not get literal char");
-            SnailNode::Literal(num.to_digit(10).expect("Could not parse literal digit"))
+            let num = num.to_digit(10).expect("Could not parse literal digit");
+            arena.alloc(SnailNode::Literal(num))
         }
 
         fn consume(expected: char, chars: &mut Peekable<Chars>) {
@@ -221,22 +266,24 @@ mod snail_numbers {
     }
 }
 
-fn read_file(path: &str) -> Vec<SnailNode> {
+fn read_file<'a>(path: &str, arena: &'a Arena<SnailNode<'a>>) -> Vec<&'a SnailNode<'a>> {
     BufReader::new(File::open(path).expect("Could not read input"))
         .lines()
         .map(|line| {
             let line = line.expect("Could not read line");
-            SnailNode::parse(&line)
+            SnailNode::parse(&line, arena)
         })
         .collect()
 }
 
 fn main() {
-    let nums: Vec<SnailNode> = read_file("input");
+    let arena = Arena::new();
+
+    let nums: Vec<&SnailNode> = read_file("input", &arena);
 
     let sum = nums.iter()
-        .map(|sn| sn.clone())
-        .reduce(|acc, sn| acc.add(sn))
+        .map(|n| *n)
+        .reduce(|acc, sn| acc.add(sn, &arena))
         .expect("Could not sum");
     println!("Part 1: {}", sum.magnitude());
     
@@ -246,9 +293,7 @@ fn main() {
             if outer == inner {
                 continue;
             }
-            let outer = outer.clone();
-            let inner = inner.clone();
-            let sum = outer.add(inner);
+            let sum = outer.add(inner, &arena);
             let magnitude = sum.magnitude();
             if magnitude > max_magnitude {
                 max_magnitude = magnitude;
@@ -261,56 +306,76 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use crate::snail_numbers::splittable::Splittable;
-    use crate::snail_numbers::explosive::Explosive;
+    use crate::snail_numbers::explosive::{ExplodeResult, Explosive};
     use super::*;
 
     #[test]
     fn test_simple_adding() {
-        let result = sn("[1,2]").add(sn("[[3,4],5]"));
-        assert_eq!(result, sn("[[1,2],[[3,4],5]]"));
+        let f = f();
+        let result = f.sn("[1,2]").add(&f.sn("[[3,4],5]"), &f.arena);
+        assert_eq!(result, f.sn("[[1,2],[[3,4],5]]"));
     }
 
     #[test]
     fn test_explode() {
-        assert_eq!(ex("[[[[[9,8],1],2],3],4]"), sn("[[[[0,9],2],3],4]"));
-        assert_eq!(ex("[7,[6,[5,[4,[3,2]]]]]"), sn("[7,[6,[5,[7,0]]]]"));
-        assert_eq!(ex("[[6,[5,[4,[3,2]]]],1]"), sn("[[6,[5,[7,0]]],3]"));
-        assert_eq!(ex("[[3,[2,[1,[7,3]]]],[6,[5,[4,[3,2]]]]]"), sn("[[3,[2,[8,0]]],[9,[5,[4,[3,2]]]]]"));
-        assert_eq!(ex("[[3,[2,[8,0]]],[9,[5,[4,[3,2]]]]]"), sn("[[3,[2,[8,0]]],[9,[5,[7,0]]]]"));
+        let f = f();
+        assert_eq!(f.ex("[[[[[9,8],1],2],3],4]"), f.sn("[[[[0,9],2],3],4]"));
+        assert_eq!(f.ex("[7,[6,[5,[4,[3,2]]]]]"), f.sn("[7,[6,[5,[7,0]]]]"));
+        assert_eq!(f.ex("[[6,[5,[4,[3,2]]]],1]"), f.sn("[[6,[5,[7,0]]],3]"));
+        assert_eq!(f.ex("[[3,[2,[1,[7,3]]]],[6,[5,[4,[3,2]]]]]"), f.sn("[[3,[2,[8,0]]],[9,[5,[4,[3,2]]]]]"));
+        assert_eq!(f.ex("[[3,[2,[8,0]]],[9,[5,[4,[3,2]]]]]"), f.sn("[[3,[2,[8,0]]],[9,[5,[7,0]]]]"));
     }
 
     #[test]
     fn test_split() {
-        let mut node = SnailNode::Pair(Box::new(SnailNode::Literal(10)), Box::new(SnailNode::Literal(0)));
-        let result = node.split();
-        assert_eq!((result, node), (true, sn("[[5,5],0]")));
+        let f = f();
+        let node = SnailNode::Pair(&SnailNode::Literal(10), &SnailNode::Literal(0));
+        let result = node.split(&f.arena);
+        assert_eq!(result, Some(f.sn("[[5,5],0]")));
 
-        let mut node = SnailNode::Pair(Box::new(SnailNode::Literal(11)), Box::new(SnailNode::Literal(0)));
-        let result = node.split();
-        assert_eq!((result, node), (true, sn("[[5,6],0]")));
+        let node = SnailNode::Pair(&SnailNode::Literal(11), &SnailNode::Literal(0));
+        let result = node.split(&f.arena);
+        assert_eq!(result, Some(f.sn("[[5,6],0]")));
     }
 
     #[test]
     fn test_add_with_reduce() {
-        let result = sn("[[[[4,3],4],4],[7,[[8,4],9]]]").add(sn("[1,1]"));
-        assert_eq!(result, sn("[[[[0,7],4],[[7,8],[6,0]]],[8,1]]"));
+        let f = f();
+        let result = f.sn("[[[[4,3],4],4],[7,[[8,4],9]]]").add(&f.sn("[1,1]"), &f.arena);
+        assert_eq!(result, f.sn("[[[[0,7],4],[[7,8],[6,0]]],[8,1]]"));
     }
 
     #[test]
     fn test_magnitude() {
-        assert_eq!(sn("[9,1]").magnitude(), 29);
-        assert_eq!(sn("[1,9]").magnitude(), 21);
-        assert_eq!(sn("[[9,1],[1,9]]").magnitude(), 129);
-        assert_eq!(sn("[[[[8,7],[7,7]],[[8,6],[7,7]]],[[[0,7],[6,6]],[8,7]]]").magnitude(), 3488);
+        let f = f();
+        assert_eq!(f.sn("[9,1]").magnitude(), 29);
+        assert_eq!(f.sn("[1,9]").magnitude(), 21);
+        assert_eq!(f.sn("[[9,1],[1,9]]").magnitude(), 129);
+        assert_eq!(f.sn("[[[[8,7],[7,7]],[[8,6],[7,7]]],[[[0,7],[6,6]],[8,7]]]").magnitude(), 3488);
     }
 
-    fn sn(input: &str) -> SnailNode {
-        SnailNode::parse(input)
+    fn f<'a>() -> Factory<'a> {
+        Factory::new()
     }
 
-    fn ex(input: &str) -> SnailNode {
-        let mut node = sn(input);
-        node.explode(0);
-        node
+    struct Factory<'a> {
+        arena: Arena<SnailNode<'a>>
+    }
+    impl <'a> Factory<'a> {
+        fn new() -> Factory<'a> {
+            Factory { arena: Arena::new() }
+        }
+
+        fn sn(&'a self, input: &str) -> &'a SnailNode<'a> {
+            SnailNode::parse(input, &self.arena)
+        }
+
+        fn ex(&'a self, input: &str) -> &'a SnailNode<'a> {
+            let node = self.sn(input);
+            match node.explode(0, &self.arena) {
+                ExplodeResult::Exploded(n, _) => n,
+                ExplodeResult::Unchanged => node
+            }
+        }
     }
 }
