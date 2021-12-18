@@ -73,12 +73,27 @@ impl SnailNode {
         }
     }
 
+    /*
+       Checks for explosion in this subtree
+
+       Returns Some((_,_)) if the subtree exploded, or None if not
+
+       The values within the Some tuple are the literal values to be added to the nearest literal to
+       the left and to the right respectively. They start as Some(l) and Some(r), but once consumed
+       (i.e. once added to a literal) they turn into None, to prevent them being added again further
+       up the tree.
+
+       Once a subtree has exploded, it will not try to explode any remaining portion of the tree.
+
+       Proceeds depth-first left-to-right.
+     */
     fn explode(&mut self, depth: u8) -> Option<(Option<u32>, Option<u32>)> {
         match self {
             SnailNode::Literal(_) => Option::None,
             SnailNode::Pair(left, right) => {
                 if depth == 4 {
                     // Swap out this node with a 0, return a Some result with left and right values to add
+                    // (Need to match again despite knowing it's a pair, now we've move the value out)
                     match replace(self, SnailNode::Literal(0)) {
                         SnailNode::Literal(_) => panic!("Pair turned into literal"),
                         SnailNode::Pair(left, right) => {
@@ -91,27 +106,21 @@ impl SnailNode {
                         }
                     }
                 } else {
-                    let result = left.explode(depth + 1);
-                    if let Some((lresult, rresult)) = result {
-                        if let Some(value) = rresult {
-                            right.add_to_leftmost_literal(value);
-                            Some((lresult, None))
-                        } else {
-                            result
-                        }
-                    } else {
-                        let result = right.explode(depth + 1);
-                        if let Some((lresult, rresult)) = result {
-                            if let Some(value) = lresult {
-                                left.add_to_rightmost_literal(value);
-                                Some((None, rresult))
-                            } else {
-                                result
-                            }
-                        } else {
-                            result
-                        }
-                    }
+                    // Check the left branch for explosion first.
+                    // If it does explode:
+                    //   - return the left-result up the chain (don't apply it immediately, that'll
+                    //     add it to the just-inserted 0)
+                    //   - add the right-result to the left-most literal on the right subtree
+                    //   - (by returning, implicitly avoid checking any further in the tree for
+                    //     explosion)
+                    // Else:
+                    //   - Check the right branch for explosion
+                    //   - If it does explode:
+                    //       - return the right-result up the chain
+                    //       - add the left-result to the right-most literal on the left subtree
+                    //   - Else the subtree from this node does not explode (so we return None)
+                    left.explode(depth + 1).and_then(|res| add_right(res, right))
+                        .or_else(|| right.explode(depth + 1).and_then(|res| add_left(res, left)))
                 }
             }
         }
@@ -156,6 +165,28 @@ impl SnailNode {
             }
         }
     }
+}
+
+fn add_left(result: (Option<u32>, Option<u32>), left: &mut Box<SnailNode>) -> Option<(Option<u32>, Option<u32>)> {
+    let (lresult, rresult) = result;
+    Some((
+        lresult.and_then(|value| {
+            left.add_to_rightmost_literal(value);
+            None
+        }),
+        rresult
+    ))
+}
+
+fn add_right(result: (Option<u32>, Option<u32>), right: &mut Box<SnailNode>) -> Option<(Option<u32>, Option<u32>)> {
+    let (lresult, rresult) = result;
+    Some((
+        lresult,
+        rresult.and_then(|value| {
+            right.add_to_leftmost_literal(value);
+            None
+        })
+    ))
 }
 
 fn read_file(path: &str) -> Vec<SnailNode> {
