@@ -91,16 +91,14 @@ impl Scan {
     }
 
     fn overlaps(&self, other: &Scan) -> Option<Point> {
-        let other_set: HashSet<_> = other.points.iter().collect();
+        let mut translation_counts = HashMap::<Point, u32>::new();
         for other_point in &other.points {
             for matched_point in &self.points {
                 let translation = matched_point.translation_needed_to(other_point);
-                let translated: Vec<_> = self.points.iter()
-                    .map(|p| p.translate(&translation))
-                    .collect();
-                let trans_set: HashSet<_> = translated.iter().collect();
-                let count = other_set.intersection(&trans_set).count();
-                if count >= 12 {
+                let count = translation_counts.entry(translation).or_default();
+                *count += 1;
+                if *count >= 12 {
+                    let translation = matched_point.translation_needed_to(other_point);
                     return Some(translation);
                 }
             }
