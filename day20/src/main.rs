@@ -28,8 +28,8 @@ struct Bounds {
 impl Bounds {
     fn grow(&self) -> Bounds {
         Bounds {
-            x_range: self.x_range.widen_by(2),
-            y_range: self.y_range.widen_by(2),
+            x_range: self.x_range.widen_by(1),
+            y_range: self.y_range.widen_by(1),
         }
     }
 
@@ -48,8 +48,8 @@ impl Image {
         let lit_pixels = input.lines()
             .enumerate()
             .map(|(y, line)| {
-                line.chars().enumerate().filter_map(move |(x, c)| {
-                    if c == '#' {
+                line.bytes().enumerate().filter_map(move |(x, c)| {
+                    if c == b'#' {
                         Some(Coord::new(x as isize, y as isize))
                     } else {
                         None
@@ -150,7 +150,7 @@ impl ImageEnhancementAlgorithm for Vec<bool> {
     }
 }
 fn parse_image_enhancement_algorithm(input: &str) -> Vec<bool> {
-    input.chars().map(|c| c == '#').collect()
+    input.bytes().map(|c| c == b'#').collect()
 }
 
 fn parse_input_file(path: &str) -> (Vec<bool>, Image) {
