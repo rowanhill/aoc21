@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::HashMap;
 
 trait Die {
     fn next(&mut self) -> u32;
@@ -21,7 +21,7 @@ impl Die for DeterministicDie {
     }
 }
 
-#[derive(Copy, Clone, Eq, PartialEq)]
+#[derive(Copy, Clone, Eq, PartialEq, Hash)]
 struct Player {
     position_index: u32,
     score: u32,
@@ -103,15 +103,14 @@ impl GameResult {
     }
 }
 
+#[derive(Hash, Eq, PartialEq)]
 struct DiracGameState {
-    num_universes: u128,
     players: [Player; 2],
     cur_player_index: usize,
 }
 impl DiracGameState {
     fn new(p1_pos: u32, p2_pos: u32) -> DiracGameState {
         DiracGameState {
-            num_universes: 1,
             players: [
                 Player {
                     position_index: p1_pos - 1,
@@ -126,7 +125,7 @@ impl DiracGameState {
         }
     }
 
-    fn play(&self) -> [DiracGameState; 7] {
+    fn play(&self) -> [(DiracGameState, u128); 7] {
         [
             self.play_roll(3, 1),
             self.play_roll(4, 3),
@@ -138,17 +137,16 @@ impl DiracGameState {
         ]
     }
 
-    fn play_roll(&self, rolls_sum: u32, num_universes: u128) -> DiracGameState {
+    fn play_roll(&self, rolls_sum: u32, num_universes: u128) -> (DiracGameState, u128) {
         let mut new_players = self.players.map(|p| p.clone());
         new_players[self.cur_player_index].move_and_score(&rolls_sum);
 
         let new_player_index = (self.cur_player_index + 1) % 2;
 
-        DiracGameState {
+        (DiracGameState {
             players: new_players,
             cur_player_index: new_player_index,
-            num_universes: self.num_universes * num_universes,
-        }
+        }, num_universes)
     }
 
     fn winner(&self, win_threshold: &u32) -> Option<usize> {
@@ -163,29 +161,32 @@ impl DiracGameState {
 }
 
 struct DiracGameMultiverse {
-    queue: VecDeque<DiracGameState>,
+    unfinished_games: HashMap<DiracGameState, u128>,
     win_counts: [u128; 2],
 }
 impl DiracGameMultiverse {
     fn new(p1_pos: u32, p2_pos: u32) -> DiracGameMultiverse {
         DiracGameMultiverse {
-            queue: VecDeque::from([
-                DiracGameState::new(p1_pos, p2_pos),
+            unfinished_games: HashMap::from([
+                (DiracGameState::new(p1_pos, p2_pos), 1),
             ]),
             win_counts: [0, 0],
         }
     }
 
     fn play_to_victories(&mut self, win_threshold: &u32) {
-        while let Some(state) = self.queue.pop_front() {
-            let new_states = state.play();
-            for new_state in new_states {
-                if let Some(winner_index) = new_state.winner(win_threshold) {
-                    self.win_counts[winner_index] += new_state.num_universes;
-                } else {
-                    self.queue.push_back(new_state);
+        while !self.unfinished_games.is_empty() {
+            let mut new_unfinished_games = HashMap::new();
+            for (state, num_universes) in &self.unfinished_games {
+                for (new_state, count) in state.play() {
+                    if let Some(winner_index) = new_state.winner(win_threshold) {
+                        self.win_counts[winner_index] += num_universes * count;
+                    } else {
+                        *new_unfinished_games.entry(new_state).or_default() += num_universes * count;
+                    }
                 }
             }
+            self.unfinished_games = new_unfinished_games;
         }
     }
 }
