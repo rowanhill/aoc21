@@ -1,13 +1,58 @@
 use std::ops::RangeInclusive;
+use itertools::Itertools;
+
+trait Intersectable<T> {
+    fn ranges_overlap(range: &RangeInclusive<T>, other: &RangeInclusive<T>) -> bool;
+    fn spans(&self, other: &RangeInclusive<T>) -> bool;
+    fn range_before(&self, other: &RangeInclusive<T>) -> Option<RangeInclusive<T>>;
+    fn range_overlap(&self, other: &RangeInclusive<T>) -> Option<RangeInclusive<T>>;
+    fn range_after(&self, other: &RangeInclusive<T>) -> Option<RangeInclusive<T>>;
+}
+impl Intersectable<i32> for RangeInclusive<i32> {
+    fn ranges_overlap(range: &RangeInclusive<i32>, other: &RangeInclusive<i32>) -> bool {
+        range.start() <= other.end() && range.end() >= other.start()
+    }
+
+    fn spans(&self, other: &RangeInclusive<i32>) -> bool {
+        self.contains(other.start()) && self.contains(other.end())
+    }
+
+    fn range_before(&self, other: &RangeInclusive<i32>) -> Option<RangeInclusive<i32>> {
+        if self.start() < other.start() {
+            let new_end = std::cmp::min(*self.end(), other.start() - 1);
+            Some(*self.start()..=new_end)
+        } else {
+            None
+        }
+    }
+
+    fn range_overlap(&self, other: &RangeInclusive<i32>) -> Option<RangeInclusive<i32>> {
+        if Self::ranges_overlap(self, other) {
+            let overlap_start = std::cmp::max(self.start(), other.start());
+            let overlap_end = std::cmp::min(self.end(), other.end());
+            Some(*overlap_start..=*overlap_end)
+        } else {
+            None
+        }
+    }
+
+    fn range_after(&self, other: &RangeInclusive<i32>) -> Option<RangeInclusive<i32>> {
+        if self.end() > other.end() {
+            let new_start = std::cmp::max(other.end() + 1, *self.start());
+            Some(new_start..=*self.end())
+        } else {
+            None
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
-struct Cuboid {
-    x_range: RangeInclusive<i32>,
-    y_range: RangeInclusive<i32>,
-    z_range: RangeInclusive<i32>,
+struct Volume<const N: usize> {
+    bounds: [RangeInclusive<i32>; N],
 }
-impl Cuboid {
-    fn from(input: &str) -> Cuboid {
+const EMPTY_RANGE: RangeInclusive<i32> = 0..=0;
+impl<const N: usize> Volume<N> {
+    fn from(input: &str) -> Volume<N> {
         let mut ranges = input.split(',')
             .map(|r| &r[2..])
             .map(|r| {
@@ -15,113 +60,81 @@ impl Cuboid {
                 let from: i32 = from.parse().expect("Could not parse from");
                 let to: i32 = to.parse().expect("Could not parse to");
                 from..=to
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(ranges.len(), 3);
-        Cuboid {
-            x_range: ranges.remove(0),
-            y_range: ranges.remove(0),
-            z_range: ranges.remove(0),
+            });
+        Self::from_iter(&mut ranges)
+    }
+
+    fn from_iter(vec: &mut dyn Iterator<Item=RangeInclusive<i32>>) -> Volume<N> {
+        let mut bounds = [EMPTY_RANGE; N];
+        let mut count = 0;
+        for (i, r) in vec.enumerate() {
+            bounds[i] = r;
+            count += 1;
         }
+        assert_eq!(count, N);
+        Volume { bounds }
     }
 
-    fn clone_from(x_range: &RangeInclusive<i32>, y_range: &RangeInclusive<i32>, z_range: &RangeInclusive<i32>) -> Cuboid {
-        Cuboid {
-            x_range: x_range.clone(),
-            y_range: y_range.clone(),
-            z_range: z_range.clone(),
-        }
+    fn overlaps_with(&self, other: &Volume<N>) -> bool {
+        (0..self.bounds.len()).all(|i| {
+            RangeInclusive::ranges_overlap(&self.bounds[i], &other.bounds[i])
+        })
     }
 
-    fn overlaps_with(&self, other: &Cuboid) -> bool {
-        ranges_overlap(&self.x_range, &other.x_range) &&
-        ranges_overlap(&self.y_range, &other.y_range) &&
-        ranges_overlap(&self.z_range, &other.z_range)
+    fn is_contained_by(&self, other: &Volume<N>) -> bool {
+        (0..self.bounds.len()).all(|i| {
+            other.bounds[i].spans(&self.bounds[i])
+        })
     }
 
-    fn is_contained_by(&self, other: &Cuboid) -> bool {
-        other.x_range.contains(self.x_range.start()) && other.x_range.contains(self.x_range.end()) &&
-        other.y_range.contains(self.y_range.start()) && other.y_range.contains(self.y_range.end()) &&
-        other.z_range.contains(self.z_range.start()) && other.z_range.contains(self.z_range.end())
-    }
-
-    fn subtract(self, other: &Cuboid, output: &mut Vec<Cuboid>) {
-        // If this cuboid and the other don't intersect, then this cuboid won't be split, and can
+    fn subtract(self, other: &Volume<N>, output: &mut Vec<Volume<N>>) {
+        // If this volume and the other don't intersect, then this volume won't be split, and can
         // push itself onto the output without modification
         if !self.overlaps_with(other) {
             output.push(self);
             return;
         }
 
-        for x_op in [range_before, range_overlap, range_after] {
-            if let Some(new_x) = x_op(&self.x_range, &other.x_range) {
-                for y_op in [range_before, range_overlap, range_after] {
-                    if let Some(new_y) = y_op(&self.y_range, &other.y_range) {
-                        for z_op in [range_before, range_overlap, range_after] {
-                            if x_op as usize != range_overlap as usize ||
-                                y_op as usize != range_overlap as usize ||
-                                z_op as usize != range_overlap as usize
-                            {
-                                if let Some(new_z) = z_op(&self.z_range, &other.z_range) {
-                                    output.push(Cuboid::clone_from(&new_x, &new_y, &new_z));
-                                }
-                            }
-                        }
-                    }
-                }
+        let subbounds_by_axis = (0..self.bounds.len()).map(|i| {
+            [
+                (0u8, self.bounds[i].range_before(&other.bounds[i])),
+                (1, self.bounds[i].range_overlap(&other.bounds[i])),
+                (2, self.bounds[i].range_after(&other.bounds[i])),
+            ].into_iter()
+        });
+
+        for op_index_and_subbounds in subbounds_by_axis.multi_cartesian_product() {
+            // Ignore the subdivision where all ranges overlap - this is the part being subtracted
+            if op_index_and_subbounds.iter().all(|(i, _)| i == &1) {
+                continue;
             }
+            // Ignore any subvolumes where at least one subdivision is None
+            if op_index_and_subbounds.iter().any(|(_, r)| r.is_none()) {
+                continue;
+            }
+            let mut subbounds = op_index_and_subbounds.into_iter().map(|(_, r)| r.unwrap());
+            let subvolume = Volume::from_iter(&mut subbounds);
+            output.push(subvolume);
         }
     }
 
     fn volume(&self) -> usize {
-        (self.x_range.end() - self.x_range.start() + 1) as usize *
-            (self.y_range.end() - self.y_range.start() + 1) as usize *
-            (self.z_range.end() - self.z_range.start() + 1) as usize
-    }
-}
-
-fn ranges_overlap(range: &RangeInclusive<i32>, other: &RangeInclusive<i32>) -> bool {
-    range.start() <= other.end() && range.end() >= other.start()
-}
-
-fn range_before(range: &RangeInclusive<i32>, other: &RangeInclusive<i32>) -> Option<RangeInclusive<i32>> {
-    if range.start() < other.start() {
-        let new_end = std::cmp::min(*range.end(), other.start() - 1);
-        Some(*range.start()..=new_end)
-    } else {
-        None
-    }
-}
-
-fn range_overlap(range: &RangeInclusive<i32>, other: &RangeInclusive<i32>) -> Option<RangeInclusive<i32>> {
-    if ranges_overlap(range, other) {
-        let overlap_start = std::cmp::max(range.start(), other.start());
-        let overlap_end = std::cmp::min(range.end(), other.end());
-        Some(*overlap_start..=*overlap_end)
-    } else {
-        None
-    }
-}
-
-fn range_after(range: &RangeInclusive<i32>, other: &RangeInclusive<i32>) -> Option<RangeInclusive<i32>> {
-    if range.end() > other.end() {
-        let new_start = std::cmp::max(other.end() + 1, *range.start());
-        Some(new_start..=*range.end())
-    } else {
-        None
+        self.bounds.iter()
+            .map(|range| range.end() - range.start() + 1)
+            .fold(1, |acc, i| acc * i as usize)
     }
 }
 
 #[derive(Debug)]
 struct Instruction {
     is_on: bool,
-    cuboid: Cuboid,
+    cuboid: Volume<3>,
 }
 impl Instruction {
     fn from(input: &str) -> Instruction {
         let (is_on, ranges) = input.split_once(' ').expect("No space split");
         let is_on = is_on == "on";
-        let cuboid = Cuboid::from(ranges);
+        let cuboid = Volume::<3>::from(ranges);
         Instruction {
             is_on,
             cuboid
@@ -130,7 +143,7 @@ impl Instruction {
 }
 
 struct ReactorCore {
-    on_cuboids: Vec<Cuboid>,
+    on_cuboids: Vec<Volume<3>>,
 }
 impl ReactorCore {
     fn new() -> ReactorCore {
@@ -140,7 +153,7 @@ impl ReactorCore {
     }
 
     fn initialise(&mut self, instructions: &Vec<Instruction>) {
-        let initialisation_area = Cuboid { x_range: -50..=50, y_range: -50..=50, z_range: -50..=50 };
+        let initialisation_area = Volume { bounds: [-50..=50, -50..=50, -50..=50] };
         let init_instructions = instructions.iter()
             .filter(|i| i.cuboid.is_contained_by(&initialisation_area));
         for instruction in init_instructions {
@@ -188,43 +201,19 @@ mod tests {
 
     #[test]
     fn test_cuboid_volume() {
-        let cuboid = Cuboid {
-            x_range: -1..=1,
-            y_range: -1..=1,
-            z_range: -1..=1,
+        let cuboid = Volume {
+            bounds: [-1..=1, -1..=1, -1..=1],
         };
         assert_eq!(cuboid.volume(), 27);
     }
 
     #[test]
-    fn test_subtracting_wholly_overlapped_cube() {
-        let bigger = Cuboid {
-            x_range: -1..=1,
-            y_range: -1..=1,
-            z_range: -1..=1,
-        };
-        let smaller = Cuboid {
-            x_range: 0..=0,
-            y_range: 0..=0,
-            z_range: 0..=0,
-        };
-        let mut results = vec![];
-        bigger.subtract(&smaller, &mut results);
-        let volume: usize = results.iter().map(|c| c.volume()).sum();
-        assert_eq!(volume, 26);
-    }
-
-    #[test]
     fn test_subtracting_wholly_overlapping_cube() {
-        let bigger = Cuboid {
-            x_range: -1..=1,
-            y_range: -1..=1,
-            z_range: -1..=1,
+        let bigger = Volume {
+            bounds: [-1..=1, -1..=1, -1..=1],
         };
-        let smaller = Cuboid {
-            x_range: 0..=0,
-            y_range: 0..=0,
-            z_range: 0..=0,
+        let smaller = Volume {
+            bounds: [0..=0, 0..=0, 0..=0],
         };
         let mut results = vec![];
         smaller.subtract(&bigger, &mut results);
@@ -234,15 +223,11 @@ mod tests {
 
     #[test]
     fn test_subtracting_partially_overlapping_cube() {
-        let first = Cuboid {
-            x_range: -1..=1,
-            y_range: -1..=1,
-            z_range: -1..=1,
+        let first = Volume {
+            bounds: [-1..=1, -1..=1, -1..=1],
         };
-        let second = Cuboid {
-            x_range: 0..=2,
-            y_range: 0..=2,
-            z_range: 0..=2,
+        let second = Volume {
+            bounds: [0..=2, 0..=2, 0..=2],
         };
         let mut results = vec![];
         first.subtract(&second, &mut results);
@@ -252,15 +237,11 @@ mod tests {
 
     #[test]
     fn test_non_overlapping_cube() {
-        let first = Cuboid {
-            x_range: -1..=1,
-            y_range: -1..=1,
-            z_range: -1..=1,
+        let first = Volume {
+            bounds: [-1..=1, -1..=1, -1..=1],
         };
-        let second = Cuboid {
-            x_range: 2..=3,
-            y_range: 2..=3,
-            z_range: 2..=3,
+        let second = Volume {
+            bounds: [2..=3, 2..=3, 2..=3],
         };
         let mut results = vec![];
         first.subtract(&second, &mut results);
@@ -270,16 +251,12 @@ mod tests {
 
     #[test]
     fn test_subtracting_first_two_instructions() {
-        let first = Cuboid {
-            x_range: -44..=9,
-            y_range: -9..=44,
-            z_range: -34..=13,
+        let first = Volume {
+            bounds: [-44..=9, -9..=44, -34..=13],
         };
         assert_eq!(first.volume(), 139968);
-        let second = Cuboid {
-            x_range: -42..=11,
-            y_range: -16..=33,
-            z_range: -2..=48,
+        let second = Volume {
+            bounds: [-42..=11, -16..=33, -2..=48],
         };
         let mut results = vec![];
         first.subtract(&second, &mut results);
