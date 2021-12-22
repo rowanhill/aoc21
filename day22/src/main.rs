@@ -1,19 +1,6 @@
-use std::collections::HashSet;
 use std::ops::RangeInclusive;
 
-#[derive(Hash, Eq, PartialEq, Debug)]
-struct Point {
-    x: i32,
-    y: i32,
-    z: i32,
-}
-impl Point {
-    fn new(x: i32, y: i32, z: i32) -> Point {
-        Point { x, y, z }
-    }
-}
-
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Cuboid {
     x_range: RangeInclusive<i32>,
     y_range: RangeInclusive<i32>,
@@ -38,10 +25,12 @@ impl Cuboid {
         }
     }
 
-    fn contains(&self, point: &Point) -> bool {
-        self.x_range.contains(&point.x) &&
-        self.y_range.contains(&point.y) &&
-        self.z_range.contains(&point.z)
+    fn clone_from(x_range: &RangeInclusive<i32>, y_range: &RangeInclusive<i32>, z_range: &RangeInclusive<i32>) -> Cuboid {
+        Cuboid {
+            x_range: x_range.clone(),
+            y_range: y_range.clone(),
+            z_range: z_range.clone(),
+        }
     }
 
     fn is_contained_by(&self, other: &Cuboid) -> bool {
@@ -50,49 +39,64 @@ impl Cuboid {
         other.z_range.contains(self.z_range.start()) && other.z_range.contains(self.z_range.end())
     }
 
-    fn points(&self) -> Points {
-        Points::new(&self)
-    }
-}
+    fn subtract(&self, other: &Cuboid) -> Vec<Cuboid> {
+        let mut result = vec![];
 
-struct Points<'a> {
-    cuboid: &'a Cuboid,
-    x: i32,
-    y: i32,
-    z: i32,
-}
-impl Points<'_> {
-    fn new(cuboid: &Cuboid) -> Points {
-        Points {
-            cuboid,
-            x: *cuboid.x_range.start(),
-            y: *cuboid.y_range.start(),
-            z: *cuboid.z_range.start(),
-        }
-    }
-}
-impl Iterator for Points<'_> {
-    type Item = Point;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if &self.z > self.cuboid.z_range.end() {
-            return None;
-        }
-
-        let point = Point::new(self.x, self.y, self.z);
-
-        self.x += 1;
-        if &self.x > self.cuboid.x_range.end() {
-            self.y += 1;
-            self.x = *self.cuboid.x_range.start();
-
-            if &self.y > self.cuboid.y_range.end() {
-                self.z += 1;
-                self.y = *self.cuboid.y_range.start();
+        for x_op in [range_before, range_overlap, range_after] {
+            if let Some(new_x) = x_op(&self.x_range, &other.x_range) {
+                for y_op in [range_before, range_overlap, range_after] {
+                    if let Some(new_y) = y_op(&self.y_range, &other.y_range) {
+                        for z_op in [range_before, range_overlap, range_after] {
+                            if x_op as usize != range_overlap as usize ||
+                                y_op as usize != range_overlap as usize ||
+                                z_op as usize != range_overlap as usize
+                            {
+                                if let Some(new_z) = z_op(&self.z_range, &other.z_range) {
+                                    result.push(Cuboid::clone_from(&new_x, &new_y, &new_z));
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 
-        Some(point)
+        // println!("  > {:?} -> {:?}", self, result);
+        result
+    }
+
+    fn volume(&self) -> usize {
+        (self.x_range.end() - self.x_range.start() + 1) as usize *
+            (self.y_range.end() - self.y_range.start() + 1) as usize *
+            (self.z_range.end() - self.z_range.start() + 1) as usize
+    }
+}
+
+fn range_before(range: &RangeInclusive<i32>, other: &RangeInclusive<i32>) -> Option<RangeInclusive<i32>> {
+    if range.start() < other.start() {
+        let new_end = std::cmp::min(*range.end(), other.start() - 1);
+        Some(*range.start()..=new_end)
+    } else {
+        None
+    }
+}
+
+fn range_overlap(range: &RangeInclusive<i32>, other: &RangeInclusive<i32>) -> Option<RangeInclusive<i32>> {
+    if range.start() <= other.end() && range.end() >= other.start() {
+        let overlap_start = std::cmp::max(range.start(), other.start());
+        let overlap_end = std::cmp::min(range.end(), other.end());
+        Some(*overlap_start..=*overlap_end)
+    } else {
+        None
+    }
+}
+
+fn range_after(range: &RangeInclusive<i32>, other: &RangeInclusive<i32>) -> Option<RangeInclusive<i32>> {
+    if range.end() > other.end() {
+        let new_start = std::cmp::max(other.end() + 1, *range.start());
+        Some(new_start..=*range.end())
+    } else {
+        None
     }
 }
 
@@ -114,45 +118,64 @@ impl Instruction {
 }
 
 struct ReactorCore {
-    on_cubes: HashSet<Point>,
-    initialisation_area: Cuboid,
+    on_cuboids: Vec<Cuboid>,
 }
 impl ReactorCore {
     fn new() -> ReactorCore {
         ReactorCore {
-            on_cubes: HashSet::new(),
-            initialisation_area: Cuboid {
-                x_range: -50..=50,
-                y_range: -50..=50,
-                z_range: -50..=50,
-            }
+            on_cuboids: vec![],
+        }
+    }
+
+    fn initialise(&mut self, instructions: &Vec<Instruction>) {
+        let initialisation_area = Cuboid { x_range: -50..=50, y_range: -50..=50, z_range: -50..=50 };
+        let init_instructions = instructions.iter()
+            .filter(|i| i.cuboid.is_contained_by(&initialisation_area));
+        for instruction in init_instructions {
+            // println!("{:?}", instruction);
+            self.process(instruction);
+            // println!("  > {} => {}", self.on_cuboids.len(), self.count_on_cubes());
+            // println!("  > {:?}", self.on_cuboids);
+        }
+    }
+
+    fn reboot(&mut self, instructions: &Vec<Instruction>) {
+        for instruction in instructions {
+            println!("{:?}", instruction);
+            self.process(instruction);
+            // println!("  > {}", self.on_cuboids.len());
         }
     }
 
     fn process(&mut self, instruction: &Instruction) {
-        if instruction.cuboid.is_contained_by(&self.initialisation_area) {
-            for point in instruction.cuboid.points() {
-                if self.initialisation_area.contains(&point) {
-                    if instruction.is_on {
-                        self.on_cubes.insert(point);
-                    } else {
-                        self.on_cubes.remove(&point);
-                    }
-                }
-            }
+        let mut new_cuboids: Vec<Cuboid> = self.on_cuboids.iter()
+            .flat_map(|c| c.subtract(&instruction.cuboid))
+            .collect();
+        if instruction.is_on {
+            // println!("  > {} + {}", new_cuboids.iter().map(|c| c.volume()).sum::<usize>(), instruction.cuboid.volume());
+            new_cuboids.push(instruction.cuboid.clone())
+        } else {
+            // println!("  > - {}", instruction.cuboid.volume());
         }
+        self.on_cuboids = new_cuboids;
+    }
+
+    fn count_on_cubes(&self) -> usize {
+        self.on_cuboids.iter().map(|c| c.volume()).sum()
     }
 }
 
 fn main() {
     let input = std::fs::read_to_string("input").expect("Could not read input");
     let instructions = input.lines().map(|l| Instruction::from(l)).collect::<Vec<_>>();
-    let mut reactor_core = ReactorCore::new();
-    for instruction in instructions {
-        reactor_core.process(&instruction);
-    }
 
-    println!("Part 1: {}", reactor_core.on_cubes.len());
+    let mut reactor_core = ReactorCore::new();
+    reactor_core.initialise(&instructions);
+    println!("Part 1: {}", reactor_core.count_on_cubes());
+
+    let mut reactor_core = ReactorCore::new();
+    reactor_core.reboot(&instructions);
+    println!("Part 2: {}", reactor_core.count_on_cubes());
 }
 
 #[cfg(test)]
@@ -160,44 +183,108 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_points_iterator() {
+    fn test_cuboid_volume() {
         let cuboid = Cuboid {
             x_range: -1..=1,
             y_range: -1..=1,
             z_range: -1..=1,
         };
-        let points = cuboid.points().collect::<Vec<_>>();
-        assert_eq!(
-            points,
-            vec![
-                Point::new(-1, -1, -1),
-                Point::new(0, -1, -1),
-                Point::new(1, -1, -1),
-                Point::new(-1, 0, -1),
-                Point::new(0, 0, -1),
-                Point::new(1, 0, -1),
-                Point::new(-1, 1, -1),
-                Point::new(0, 1, -1),
-                Point::new(1, 1, -1),
-                Point::new(-1, -1, 0),
-                Point::new(0, -1, 0),
-                Point::new(1, -1, 0),
-                Point::new(-1, 0, 0),
-                Point::new(0, 0, 0),
-                Point::new(1, 0, 0),
-                Point::new(-1, 1, 0),
-                Point::new(0, 1, 0),
-                Point::new(1, 1, 0),
-                Point::new(-1, -1, 1),
-                Point::new(0, -1, 1),
-                Point::new(1, -1, 1),
-                Point::new(-1, 0, 1),
-                Point::new(0, 0, 1),
-                Point::new(1, 0, 1),
-                Point::new(-1, 1, 1),
-                Point::new(0, 1, 1),
-                Point::new(1, 1, 1),
-            ]
-        )
+        assert_eq!(cuboid.volume(), 27);
+    }
+
+    #[test]
+    fn test_subtracting_wholly_overlapped_cube() {
+        let bigger = Cuboid {
+            x_range: -1..=1,
+            y_range: -1..=1,
+            z_range: -1..=1,
+        };
+        let smaller = Cuboid {
+            x_range: 0..=0,
+            y_range: 0..=0,
+            z_range: 0..=0,
+        };
+        let results = bigger.subtract(&smaller);
+        let volume: usize = results.iter().map(|c| c.volume()).sum();
+        assert_eq!(volume, 26);
+    }
+
+    #[test]
+    fn test_subtracting_wholly_overlapping_cube() {
+        let bigger = Cuboid {
+            x_range: -1..=1,
+            y_range: -1..=1,
+            z_range: -1..=1,
+        };
+        let smaller = Cuboid {
+            x_range: 0..=0,
+            y_range: 0..=0,
+            z_range: 0..=0,
+        };
+        let results = smaller.subtract(&bigger);
+        let volume: usize = results.iter().map(|c| c.volume()).sum();
+        assert_eq!(volume, 0);
+    }
+
+    #[test]
+    fn test_subtracting_partially_overlapping_cube() {
+        let first = Cuboid {
+            x_range: -1..=1,
+            y_range: -1..=1,
+            z_range: -1..=1,
+        };
+        let second = Cuboid {
+            x_range: 0..=2,
+            y_range: 0..=2,
+            z_range: 0..=2,
+        };
+        let results = first.subtract(&second);
+        let volume: usize = results.iter().map(|c| c.volume()).sum();
+        assert_eq!(volume, 19);
+    }
+
+    #[test]
+    fn test_non_overlapping_cube() {
+        let first = Cuboid {
+            x_range: -1..=1,
+            y_range: -1..=1,
+            z_range: -1..=1,
+        };
+        let second = Cuboid {
+            x_range: 2..=3,
+            y_range: 2..=3,
+            z_range: 2..=3,
+        };
+        let results = first.subtract(&second);
+        let volume: usize = results.iter().map(|c| c.volume()).sum();
+        assert_eq!(volume, 27);
+    }
+
+    #[test]
+    fn test_subtracting_first_two_instructions() {
+        let first = Cuboid {
+            x_range: -44..=9,
+            y_range: -9..=44,
+            z_range: -34..=13,
+        };
+        assert_eq!(first.volume(), 139968);
+        let second = Cuboid {
+            x_range: -42..=11,
+            y_range: -16..=33,
+            z_range: -2..=48,
+        };
+        let results = first.subtract(&second);
+        assert_eq!(results.len(), 7);
+        let volume: usize = results.iter().map(|c| c.volume()).sum();
+        assert_eq!(volume, 104192);
+    }
+
+    #[test]
+    fn test_example_1_part_1() {
+        let input = std::fs::read_to_string("example1").expect("Could not read input");
+        let instructions = input.lines().map(|l| Instruction::from(l)).collect::<Vec<_>>();
+        let mut reactor_core = ReactorCore::new();
+        reactor_core.initialise(&instructions);
+        assert_eq!(reactor_core.count_on_cubes(), 39);
     }
 }
