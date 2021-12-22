@@ -33,14 +33,25 @@ impl Cuboid {
         }
     }
 
+    fn overlaps_with(&self, other: &Cuboid) -> bool {
+        ranges_overlap(&self.x_range, &other.x_range) &&
+        ranges_overlap(&self.y_range, &other.y_range) &&
+        ranges_overlap(&self.z_range, &other.z_range)
+    }
+
     fn is_contained_by(&self, other: &Cuboid) -> bool {
         other.x_range.contains(self.x_range.start()) && other.x_range.contains(self.x_range.end()) &&
         other.y_range.contains(self.y_range.start()) && other.y_range.contains(self.y_range.end()) &&
         other.z_range.contains(self.z_range.start()) && other.z_range.contains(self.z_range.end())
     }
 
-    fn subtract(&self, other: &Cuboid) -> Vec<Cuboid> {
-        let mut result = vec![];
+    fn subtract(self, other: &Cuboid, output: &mut Vec<Cuboid>) {
+        // If this cuboid and the other don't intersect, then this cuboid won't be split, and can
+        // push itself onto the output without modification
+        if !self.overlaps_with(other) {
+            output.push(self);
+            return;
+        }
 
         for x_op in [range_before, range_overlap, range_after] {
             if let Some(new_x) = x_op(&self.x_range, &other.x_range) {
@@ -52,7 +63,7 @@ impl Cuboid {
                                 z_op as usize != range_overlap as usize
                             {
                                 if let Some(new_z) = z_op(&self.z_range, &other.z_range) {
-                                    result.push(Cuboid::clone_from(&new_x, &new_y, &new_z));
+                                    output.push(Cuboid::clone_from(&new_x, &new_y, &new_z));
                                 }
                             }
                         }
@@ -60,9 +71,6 @@ impl Cuboid {
                 }
             }
         }
-
-        // println!("  > {:?} -> {:?}", self, result);
-        result
     }
 
     fn volume(&self) -> usize {
@@ -70,6 +78,10 @@ impl Cuboid {
             (self.y_range.end() - self.y_range.start() + 1) as usize *
             (self.z_range.end() - self.z_range.start() + 1) as usize
     }
+}
+
+fn ranges_overlap(range: &RangeInclusive<i32>, other: &RangeInclusive<i32>) -> bool {
+    range.start() <= other.end() && range.end() >= other.start()
 }
 
 fn range_before(range: &RangeInclusive<i32>, other: &RangeInclusive<i32>) -> Option<RangeInclusive<i32>> {
@@ -82,7 +94,7 @@ fn range_before(range: &RangeInclusive<i32>, other: &RangeInclusive<i32>) -> Opt
 }
 
 fn range_overlap(range: &RangeInclusive<i32>, other: &RangeInclusive<i32>) -> Option<RangeInclusive<i32>> {
-    if range.start() <= other.end() && range.end() >= other.start() {
+    if ranges_overlap(range, other) {
         let overlap_start = std::cmp::max(range.start(), other.start());
         let overlap_end = std::cmp::min(range.end(), other.end());
         Some(*overlap_start..=*overlap_end)
@@ -132,32 +144,24 @@ impl ReactorCore {
         let init_instructions = instructions.iter()
             .filter(|i| i.cuboid.is_contained_by(&initialisation_area));
         for instruction in init_instructions {
-            // println!("{:?}", instruction);
             self.process(instruction);
-            // println!("  > {} => {}", self.on_cuboids.len(), self.count_on_cubes());
-            // println!("  > {:?}", self.on_cuboids);
         }
     }
 
     fn reboot(&mut self, instructions: &Vec<Instruction>) {
         for instruction in instructions {
-            println!("{:?}", instruction);
             self.process(instruction);
-            // println!("  > {}", self.on_cuboids.len());
         }
     }
 
     fn process(&mut self, instruction: &Instruction) {
-        let mut new_cuboids: Vec<Cuboid> = self.on_cuboids.iter()
-            .flat_map(|c| c.subtract(&instruction.cuboid))
-            .collect();
-        if instruction.is_on {
-            // println!("  > {} + {}", new_cuboids.iter().map(|c| c.volume()).sum::<usize>(), instruction.cuboid.volume());
-            new_cuboids.push(instruction.cuboid.clone())
-        } else {
-            // println!("  > - {}", instruction.cuboid.volume());
+        let old_cuboids = std::mem::replace(&mut self.on_cuboids, vec![]);
+        for cuboid in old_cuboids {
+            cuboid.subtract(&instruction.cuboid, &mut self.on_cuboids);
         }
-        self.on_cuboids = new_cuboids;
+        if instruction.is_on {
+            self.on_cuboids.push(instruction.cuboid.clone())
+        }
     }
 
     fn count_on_cubes(&self) -> usize {
@@ -204,7 +208,8 @@ mod tests {
             y_range: 0..=0,
             z_range: 0..=0,
         };
-        let results = bigger.subtract(&smaller);
+        let mut results = vec![];
+        bigger.subtract(&smaller, &mut results);
         let volume: usize = results.iter().map(|c| c.volume()).sum();
         assert_eq!(volume, 26);
     }
@@ -221,7 +226,8 @@ mod tests {
             y_range: 0..=0,
             z_range: 0..=0,
         };
-        let results = smaller.subtract(&bigger);
+        let mut results = vec![];
+        smaller.subtract(&bigger, &mut results);
         let volume: usize = results.iter().map(|c| c.volume()).sum();
         assert_eq!(volume, 0);
     }
@@ -238,7 +244,8 @@ mod tests {
             y_range: 0..=2,
             z_range: 0..=2,
         };
-        let results = first.subtract(&second);
+        let mut results = vec![];
+        first.subtract(&second, &mut results);
         let volume: usize = results.iter().map(|c| c.volume()).sum();
         assert_eq!(volume, 19);
     }
@@ -255,7 +262,8 @@ mod tests {
             y_range: 2..=3,
             z_range: 2..=3,
         };
-        let results = first.subtract(&second);
+        let mut results = vec![];
+        first.subtract(&second, &mut results);
         let volume: usize = results.iter().map(|c| c.volume()).sum();
         assert_eq!(volume, 27);
     }
@@ -273,7 +281,8 @@ mod tests {
             y_range: -16..=33,
             z_range: -2..=48,
         };
-        let results = first.subtract(&second);
+        let mut results = vec![];
+        first.subtract(&second, &mut results);
         assert_eq!(results.len(), 7);
         let volume: usize = results.iter().map(|c| c.volume()).sum();
         assert_eq!(volume, 104192);
