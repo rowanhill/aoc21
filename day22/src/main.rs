@@ -53,16 +53,29 @@ impl Cuboid {
             return;
         }
 
-        for x_op in [range_before, range_overlap, range_after] {
-            if let Some(new_x) = x_op(&self.x_range, &other.x_range) {
-                for y_op in [range_before, range_overlap, range_after] {
-                    if let Some(new_y) = y_op(&self.y_range, &other.y_range) {
-                        for z_op in [range_before, range_overlap, range_after] {
-                            if x_op as usize != range_overlap as usize ||
-                                y_op as usize != range_overlap as usize ||
-                                z_op as usize != range_overlap as usize
-                            {
-                                if let Some(new_z) = z_op(&self.z_range, &other.z_range) {
+        let x_subranges = [
+            (0, range_before(&self.x_range, &other.x_range)),
+            (1, range_overlap(&self.x_range, &other.x_range)),
+            (2, range_after(&self.x_range, &other.x_range)),
+        ];
+        let y_subranges = [
+            (0, range_before(&self.y_range, &other.y_range)),
+            (1, range_overlap(&self.y_range, &other.y_range)),
+            (2, range_after(&self.y_range, &other.y_range)),
+        ];
+        let z_subranges = [
+            (0, range_before(&self.z_range, &other.z_range)),
+            (1, range_overlap(&self.z_range, &other.z_range)),
+            (2, range_after(&self.z_range, &other.z_range)),
+        ];
+
+        for (x_op, x_subrange) in &x_subranges {
+            if let Some(new_x) = x_subrange {
+                for (y_op, y_subrange) in &y_subranges {
+                    if let Some(new_y) = y_subrange {
+                        for (z_op, z_subrange) in &z_subranges {
+                            if x_op != &1 || y_op != &1 || z_op != &1 {
+                                if let Some(new_z) = z_subrange {
                                     output.push(Cuboid::clone_from(&new_x, &new_y, &new_z));
                                 }
                             }
