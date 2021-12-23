@@ -1,7 +1,9 @@
+use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashSet};
 use crate::AmphipodVariety::{A, B, C, D};
 use crate::BurrowLocation::{Hallway, Room};
 
-#[derive(Eq, PartialEq, Clone)]
+#[derive(Clone, Hash, Eq, PartialEq)]
 enum AmphipodVariety {
     A,
     B,
@@ -37,7 +39,7 @@ impl AmphipodVariety {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Hash, Eq, PartialEq)]
 struct Amphipod {
     variety: AmphipodVariety,
     is_home: bool,
@@ -57,19 +59,60 @@ enum BurrowLocation {
 
 type Move = (BurrowLocation, BurrowLocation, usize);
 
-#[derive(Clone)]
+struct State<const DEPTH: usize> {
+    burrow: Burrow<DEPTH>,
+    inverse_movement_cost: isize,
+}
+impl<const DEPTH: usize> State<DEPTH> {
+    fn new(burrow: Burrow<DEPTH>) -> State<DEPTH> {
+        State { burrow, inverse_movement_cost: 0 }
+    }
+
+    fn neighbour_states(&self) -> Vec<State<DEPTH>> {
+        self.burrow.available_moves()
+            .iter()
+            .map(|mv| self.new_state_from_move(mv))
+            .collect()
+    }
+
+    fn new_state_from_move(&self, mv: &Move) -> State<DEPTH> {
+        let mut new_burrow = self.burrow.clone();
+        let move_cost = new_burrow.apply_move(mv);
+        State {
+            burrow: new_burrow,
+            inverse_movement_cost: self.inverse_movement_cost - move_cost as isize,
+        }
+    }
+}
+
+impl<const DEPTH: usize> Ord for State<DEPTH> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.inverse_movement_cost.cmp(&other.inverse_movement_cost)
+    }
+}
+impl<const DEPTH: usize> PartialOrd for State<DEPTH> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl<const DEPTH: usize> PartialEq<State<DEPTH>> for State<DEPTH> {
+    fn eq(&self, other: &Self) -> bool {
+        self.cmp(other) == Ordering::Equal
+    }
+}
+impl<const DEPTH: usize> Eq for State<DEPTH> {}
+
+#[derive(Clone, Hash, Eq, PartialEq)]
 struct Burrow<const DEPTH: usize> {
     rooms: [[Option<Amphipod>; DEPTH]; 4],
     hallway: [Option<Amphipod>; 11],
-    movement_cost: usize,
-    solution_parent: Option<Box<Burrow<DEPTH>>>
 }
 
 impl<const DEPTH: usize> Burrow<DEPTH> {
     fn new(rooms: [[AmphipodVariety; DEPTH]; 4]) -> Burrow<DEPTH> {
         let mut rooms = rooms.map(|r| {
             r.map(|variety| {
-                Some( Amphipod { variety, is_home: false })
+                Some(Amphipod { variety, is_home: false })
             })
         });
         for ri in 0..rooms.len() {
@@ -86,49 +129,10 @@ impl<const DEPTH: usize> Burrow<DEPTH> {
         Burrow {
             rooms,
             hallway: [None, None, None, None, None, None, None, None, None, None, None],
-            movement_cost: 0,
-            solution_parent: None,
         }
-    }
-
-    fn find_solution(self) -> Option<Burrow<DEPTH>> {
-        if self.is_complete() {
-            return Some(self);
-        }
-
-        // println!("Looking from {}", self.movement_cost);
-
-        let mut cheapest_solution = self.available_moves()
-            .iter()
-            .filter_map(|mv| self.new_state_from_move(&mv).find_solution())
-            .min_by_key(|b| b.movement_cost);
-
-        if let Some(soln) = &mut cheapest_solution {
-            // println!("{} parent of {}", self.movement_cost, soln.movement_cost);
-            soln.append_solution_parent(self);
-        }
-
-        cheapest_solution
-    }
-
-    fn append_solution_parent(&mut self, new_parent: Burrow<DEPTH>) {
-        if let Some(parent) = &mut self.solution_parent {
-            parent.append_solution_parent(new_parent);
-        } else {
-            self.solution_parent = Some(Box::new(new_parent))
-        }
-    }
-
-    fn print_map_sequence(&self) {
-        if let Some(parent) = &self.solution_parent {
-            parent.print_map_sequence();
-            println!();
-        }
-        self.print_map();
     }
 
     fn print_map(&self) {
-        println!("{}:", self.movement_cost);
         println!("#############");
         print!("#");
         for h in &self.hallway {
@@ -144,7 +148,7 @@ impl<const DEPTH: usize> Burrow<DEPTH> {
         );
         for i in 1..DEPTH {
             println!(
-                "  #{}#{}#{}#{}###",
+                "  #{}#{}#{}#{}#",
                 debug_char(&self.rooms[0][i]),
                 debug_char(&self.rooms[1][i]),
                 debug_char(&self.rooms[2][i]),
@@ -243,13 +247,8 @@ impl<const DEPTH: usize> Burrow<DEPTH> {
         result
     }
 
-    fn new_state_from_move(&self, mv: &Move) -> Burrow<DEPTH> {
-        let mut new_state = self.clone();
-        new_state.apply_move(mv);
-        new_state
-    }
-
-    fn apply_move(&mut self, mv: &Move) {
+    // Returns cost of the move
+    fn apply_move(&mut self, mv: &Move) -> usize {
         // Move out of from
         let amph = match mv.0 {
             Room(ri, si) => {
@@ -262,8 +261,7 @@ impl<const DEPTH: usize> Burrow<DEPTH> {
 
         let mut amph = amph.expect("Move's from location is empty");
 
-        // Update total cost
-        self.movement_cost += amph.variety.movement_cost() * mv.2;
+        let cost = amph.variety.movement_cost() * mv.2;
 
         // Move into to
         match mv.1 {
@@ -281,6 +279,8 @@ impl<const DEPTH: usize> Burrow<DEPTH> {
                 self.hallway[hi] = Some(amph);
             }
         }
+
+        cost
     }
 
     fn deepest_available_slot_index(&self, &room_index: &usize) -> Option<usize> {
@@ -313,19 +313,45 @@ impl<const DEPTH: usize> Burrow<DEPTH> {
     }
 }
 
+struct Search<const DEPTH: usize> {
+    priority_queue: BinaryHeap<State<DEPTH>>,
+    visited: HashSet<Burrow<DEPTH>>,
+}
+impl<const DEPTH: usize> Search<DEPTH> {
+    fn new(start: State<DEPTH>) -> Search<DEPTH> {
+        let mut search = Search {
+            priority_queue: BinaryHeap::new(),
+            visited: HashSet::new(),
+        };
+        search.priority_queue.push(start);
+        search
+    }
+
+    fn find_cheapest_complete_state(&mut self) -> Option<State<DEPTH>> {
+        while let Some(state) = self.priority_queue.pop() {
+            if state.burrow.is_complete() {
+                return Some(state);
+            }
+            if self.visited.contains(&state.burrow) {
+                continue;
+            }
+            self.priority_queue.extend(state.neighbour_states());
+            self.visited.insert(state.burrow);
+        }
+        None
+    }
+}
+
 fn main() {
+    // Part 1 example:
     // let burrow = Burrow::new([
-    //     [A, C],
-    //     [D, D],
-    //     [C, B],
-    //     [A, B]
+    //     [B, A],
+    //     [C, D],
+    //     [B, C],
+    //     [D, A]
     // ]);
-    let burrow = Burrow::new([
-        [B, A],
-        [C, D],
-        [B, C],
-        [D, A]
-    ]);
+
+    // Part 1 with expected moves working backwards - uncommenting more requires solving more steps
     // let mut burrow = Burrow::new([
     //     [A, A],
     //     [B, B],
@@ -340,7 +366,7 @@ fn main() {
     // if let Some(amph) = &mut burrow.hallway[5] {
     //     amph.is_home = false;
     // }
-    // // burrow.apply_move(&(Room(3, 1), Hallway(7), 0));
+    // burrow.apply_move(&(Room(3, 1), Hallway(7), 0));
     // if let Some(amph) = &mut burrow.hallway[7] {
     //     amph.is_home = false;
     // }
@@ -372,12 +398,35 @@ fn main() {
     // if let Some(amph) = &mut burrow.rooms[2][0] {
     //     amph.is_home = false;
     // }
-    let soln = burrow.find_solution();
+
+    let part_1_burrow = Burrow::new([
+        [A, C],
+        [D, D],
+        [C, B],
+        [A, B],
+    ]);
+    let mut search = Search::new(State::new(part_1_burrow));
+    let soln = search.find_cheapest_complete_state();
     if let Some(soln) = soln {
-        soln.print_map_sequence();
-        println!("Part 1: {}", soln.movement_cost);
+        soln.burrow.print_map();
+        println!("Part 1: {}", -soln.inverse_movement_cost);
     } else {
         panic!("Could not find solution to part 1");
+    }
+
+    let part_2_burrow = Burrow::new([
+        [A, D, D, C],
+        [D, C, B, D],
+        [C, B, A, B],
+        [A, A, C, B],
+    ]);
+    let mut search = Search::new(State::new(part_2_burrow));
+    let soln = search.find_cheapest_complete_state();
+    if let Some(soln) = soln {
+        soln.burrow.print_map();
+        println!("Part 2: {}", -soln.inverse_movement_cost);
+    } else {
+        panic!("Could not find solution to part 2");
     }
 }
 
