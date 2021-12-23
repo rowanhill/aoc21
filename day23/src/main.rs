@@ -58,15 +58,15 @@ enum BurrowLocation {
 type Move = (BurrowLocation, BurrowLocation, usize);
 
 #[derive(Clone)]
-struct Burrow {
-    rooms: [[Option<Amphipod>; 2]; 4],
+struct Burrow<const DEPTH: usize> {
+    rooms: [[Option<Amphipod>; DEPTH]; 4],
     hallway: [Option<Amphipod>; 11],
     movement_cost: usize,
-    solution_parent: Option<Box<Burrow>>
+    solution_parent: Option<Box<Burrow<DEPTH>>>
 }
 
-impl Burrow {
-    fn new(rooms: [[AmphipodVariety; 2]; 4]) -> Burrow {
+impl<const DEPTH: usize> Burrow<DEPTH> {
+    fn new(rooms: [[AmphipodVariety; DEPTH]; 4]) -> Burrow<DEPTH> {
         let mut rooms = rooms.map(|r| {
             r.map(|variety| {
                 Some( Amphipod { variety, is_home: false })
@@ -74,13 +74,13 @@ impl Burrow {
         });
         for ri in 0..rooms.len() {
             let room = &mut rooms[ri];
-            let mut bottom_is_home = false;
-            if let Some(bottom) = &mut room[1] {
-                bottom.is_home = ri == bottom.variety.room_index();
-                bottom_is_home = bottom.is_home;
-            }
-            if let Some(top) = &mut room[0] {
-                top.is_home = ri == top.variety.room_index() && bottom_is_home;
+            let mut lower_are_all_home = true;
+            for si in 0..room.len() {
+                let si = room.len() - si - 1;
+                if let Some(amph) = &mut room[si] {
+                    amph.is_home = lower_are_all_home && ri == amph.variety.room_index();
+                    lower_are_all_home = amph.is_home;
+                }
             }
         }
         Burrow {
@@ -91,7 +91,7 @@ impl Burrow {
         }
     }
 
-    fn find_solution(self) -> Option<Burrow> {
+    fn find_solution(self) -> Option<Burrow<DEPTH>> {
         if self.is_complete() {
             return Some(self);
         }
@@ -111,7 +111,7 @@ impl Burrow {
         cheapest_solution
     }
 
-    fn append_solution_parent(&mut self, new_parent: Burrow) {
+    fn append_solution_parent(&mut self, new_parent: Burrow<DEPTH>) {
         if let Some(parent) = &mut self.solution_parent {
             parent.append_solution_parent(new_parent);
         } else {
@@ -142,24 +142,26 @@ impl Burrow {
             debug_char(&self.rooms[2][0]),
             debug_char(&self.rooms[3][0]),
         );
-        println!(
-            "  #{}#{}#{}#{}###",
-            debug_char(&self.rooms[0][1]),
-            debug_char(&self.rooms[1][1]),
-            debug_char(&self.rooms[2][1]),
-            debug_char(&self.rooms[3][1]),
-        );
+        for i in 1..DEPTH {
+            println!(
+                "  #{}#{}#{}#{}###",
+                debug_char(&self.rooms[0][i]),
+                debug_char(&self.rooms[1][i]),
+                debug_char(&self.rooms[2][i]),
+                debug_char(&self.rooms[3][i]),
+            );
+        }
         println!("  #########");
     }
 
     fn is_complete(&self) -> bool {
-        let expected = [AmphipodVariety::A, AmphipodVariety::B, AmphipodVariety::C, AmphipodVariety::D];
+        const EXPECTED_VARIETY_BY_ROOM_ID: [AmphipodVariety; 4] = [AmphipodVariety::A, AmphipodVariety::B, AmphipodVariety::C, AmphipodVariety::D];
         for i in 0..self.rooms.len() {
             let room = &self.rooms[i];
             for j in 0..room.len() {
                 let amph = &room[j];
                 if let Some(amph) = amph {
-                    if amph.variety != expected[i] {
+                    if amph.variety != EXPECTED_VARIETY_BY_ROOM_ID[i] {
                         // Mismatched variety
                         return false;
                     }
@@ -215,9 +217,11 @@ impl Burrow {
 
         // find hallway spots amphs in rooms other than their own can move to
         for (ri, room) in self.rooms.iter().enumerate() {
-            for (si, slot) in room.iter().enumerate() {
-                if let Some(amph) = slot {
-                    if !amph.is_home && (si == 0 || room[0].is_none())  {
+            let first_amph = room.iter().enumerate()
+                .find(|(_, slot)| slot.is_some());
+            if let Some((si, amph)) = first_amph {
+                if let Some(amph) = amph {
+                    if !amph.is_home {
                         for target_hi in [0, 1, 3, 5, 7, 9, 10] {
                             let starting_hi = self.hallway_index_of_room(&ri);
                             let low = std::cmp::min(starting_hi, target_hi);
@@ -239,7 +243,7 @@ impl Burrow {
         result
     }
 
-    fn new_state_from_move(&self, mv: &Move) -> Burrow {
+    fn new_state_from_move(&self, mv: &Move) -> Burrow<DEPTH> {
         let mut new_state = self.clone();
         new_state.apply_move(mv);
         new_state
@@ -280,24 +284,22 @@ impl Burrow {
     }
 
     fn deepest_available_slot_index(&self, &room_index: &usize) -> Option<usize> {
-        if let Some(amph) = &self.rooms[room_index][1] {
-            // Bottom is taken.
-            if !amph.is_home {
-                // Bottom still needs to move, so this room cannot be a destination
-                None
-            } else {
-                if let None = self.rooms[room_index][0] {
-                    // Top is free
-                    Some(0)
-                } else {
-                    // All slots taken
-                    None
+        let room = &self.rooms[room_index];
+        for si in 0..room.len() {
+            let si = room.len() - si - 1;
+            if let Some(amph) = &room[si] {
+                if !amph.is_home {
+                    // Even if there's a free slow higher up, this amph still needs to move, so
+                    // this room cannot be a destination
+                    return None;
                 }
+            } else {
+                // This slot is empty
+                return Some(si);
             }
-        } else {
-            // Bottom is free (so top must also be free)
-            Some (1)
         }
+        // If we reached the top without finding a slot, this room isn't a destination
+        None
     }
 
     fn hallway_index_of_room(&self, room_index: &usize) -> usize {
@@ -312,18 +314,18 @@ impl Burrow {
 }
 
 fn main() {
-    let burrow = Burrow::new([
-        [A, C],
-        [D, D],
-        [C, B],
-        [A, B]
-    ]);
     // let burrow = Burrow::new([
-    //     [B, A],
-    //     [C, D],
-    //     [B, C],
-    //     [D, A]
+    //     [A, C],
+    //     [D, D],
+    //     [C, B],
+    //     [A, B]
     // ]);
+    let burrow = Burrow::new([
+        [B, A],
+        [C, D],
+        [B, C],
+        [D, A]
+    ]);
     // let mut burrow = Burrow::new([
     //     [A, A],
     //     [B, B],
@@ -338,7 +340,7 @@ fn main() {
     // if let Some(amph) = &mut burrow.hallway[5] {
     //     amph.is_home = false;
     // }
-    // burrow.apply_move(&(Room(3, 1), Hallway(7), 0));
+    // // burrow.apply_move(&(Room(3, 1), Hallway(7), 0));
     // if let Some(amph) = &mut burrow.hallway[7] {
     //     amph.is_home = false;
     // }
