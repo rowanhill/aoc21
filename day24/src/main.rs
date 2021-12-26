@@ -1,3 +1,6 @@
+// For various 'paper' working see https://docs.google.com/spreadsheets/d/1i6aJbyZE-37sVAUL5jy029xRr_Q1i8tZva4yxVVP4oA/edit?usp=sharing
+
+
 // An ALU emulator - waaay too slow
 
 // use crate::BinOp::{Add, Divide, Equal, Modulo, Multiply};
@@ -186,11 +189,38 @@
 //     }
 // }
 
+/*
+The instructions effectively work with a "polynomial" of base 26. There are 14 very similar sections
+within the program (one for each digit of the model number). Each section either increases the
+degree of the polynomial (by multiplying by 26) and adds a new term, or decreases the degree of the
+polynomial (chopping off any constant term). If a 'decrease' section tries to add something non-zero
+to the newly constant term, the final result will not be 0 - either the model number will be invalid.
+Whether a 'decrease' section will add a non-zero constant depends on whether the section's input
+plus a constant is equal to the decreased polynomial's constant term. That constant term is just a
+previous sections input plus a different constant. So whether a model number is valid boils down to
+whether pairs of inputs are separated by some constant (input[a] == input[b] + c + d). The pairs
+can be derived via a stack - push the input to the stack for the 'increase' sections, and pop off
+again on the 'decrease' sections. Each section of instructions is identical except for three literal
+numbers:
+ 0: 1 or 26, defining decrease or increase respectively
+ 1: An arbitrary constant
+ 2: An arbitrary constant
+The required difference between pairs of inputs is "constant 2 from the increase section plus
+constant 1from the decrease section".
 
-// Use insights from the decompiled version of code that digits must fall within certain ranges
-// for the end result to be z, and that depends only on a calculation from the previous 'cycle'.
-
+So, finally, we can understand this function. It keeps two arrays of 14 digits - one for the minimum
+acceptable model number, one for the maximum. It iterates through each notional 'section' of
+instructions. For 'increase' sections, it pushes the section/digit index plus constant 2, for later
+use. For 'decrease' sections, it pops from the stack, at which point it has a pair, so can determine
+the max and min values for each digit:
+- adding the popped const 2 with the current section's const 1 gives the required difference between
+  the two digits.
+- this may be positive (so current digit >= popped digit) or negative (the reverse)
+- for the min model number, whichever digit is the smaller must be 1, and the other 1 + abs(diff)
+- for the max model number, whichever digit is the greater must be 9, and the other 9 - abs(diff)
+ */
 fn max_min_model_num() {
+    // These constants are hardcoded from my input for expediency
     let consts = [
         (1, 10, 0),
         (1, 12, 6),
@@ -218,17 +248,28 @@ fn max_min_model_num() {
             stack.push((digit_index, consts[digit_index].2));
         } else {
             let (prev_digit_index, prev_y_adjustment) = stack.pop().unwrap();
+            // The required difference between the prev and current digits
             let diff = prev_y_adjustment + consts[digit_index].1;
             if diff >= 0 {
-                max[digit_index] = 9; // this may be revised down in the future
-                max[prev_digit_index] = 9 - diff; // the value required to pass the conditional
-                min[digit_index] = 1 + diff; // the value required to pass the conditional
+                // previous digit is smaller than (or equal to) current digit
+
+                // min is 1 and 1 + diff
                 min[prev_digit_index] = 1;
+                min[digit_index] = 1 + diff;
+
+                // max is 9 - diff and 9
+                max[prev_digit_index] = 9 - diff;
+                max[digit_index] = 9;
             } else {
-                max[digit_index] = 9 + diff; // the value required to pass the conditional
-                max[prev_digit_index] = 9; // this may be revised down in the future
+                // previous digit is greater than current digit
+
+                // min is 1 and 1 + abs(diff)
                 min[digit_index] = 1;
-                min[prev_digit_index] = 1 - diff; // the value required to pass the conditional
+                min[prev_digit_index] = 1 - diff;
+
+                // max is 9 - abs(diff) and 9
+                max[digit_index] = 9 + diff;
+                max[prev_digit_index] = 9;
             }
         }
     }
