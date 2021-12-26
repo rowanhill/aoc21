@@ -219,25 +219,7 @@ the max and min values for each digit:
 - for the min model number, whichever digit is the smaller must be 1, and the other 1 + abs(diff)
 - for the max model number, whichever digit is the greater must be 9, and the other 9 - abs(diff)
  */
-fn max_min_model_num() {
-    // These constants are hardcoded from my input for expediency
-    let consts = [
-        (1, 10, 0),
-        (1, 12, 6),
-        (1, 13, 4),
-        (1, 13, 2),
-        (1, 14, 9),
-        (26, -2, 1),
-        (1, 11, 10),
-        (26, -15, 6),
-        (26, -10, 4),
-        (1, 10, 6),
-        (26, -10, 3),
-        (26, -4, 9),
-        (26, -1, 15),
-        (26, -1, 5)
-    ];
-
+fn max_min_model_num(consts: &[(i32, i32, i32); 14]) -> (usize, usize) {
     let mut max = [0; 14];
     let mut min = [0; 14];
 
@@ -274,28 +256,40 @@ fn max_min_model_num() {
         }
     }
 
-    println!("Part 1: {}", join_to_string(max));
-    println!("Part 2: {}", join_to_string(min));
+    (join_to_int(max), join_to_int(min))
 }
 
-fn join_to_string(digits: [i32; 14]) -> String {
-    format!(
-        "{}{}{}{}{}{}{}{}{}{}{}{}{}{}",
-        digits[0],
-        digits[1],
-        digits[2],
-        digits[3],
-        digits[4],
-        digits[5],
-        digits[6],
-        digits[7],
-        digits[8],
-        digits[9],
-        digits[10],
-        digits[11],
-        digits[12],
-        digits[13],
-    )
+fn extract_constants_from_path(path: &str) -> [(i32, i32, i32); 14] {
+    let mut result = [(0,0,0); 14];
+
+    let input = std::fs::read_to_string(path).expect("Could not read input file");
+    let sections = input.split("inp w\n");
+    assert_eq!(sections.clone().count(), 15);
+
+    for (i, section) in sections.skip(1).enumerate() {
+        let lines = section.lines().collect::<Vec<_>>();
+        result[i].0 = {
+            let divz = lines[3];
+            assert!(divz.starts_with("div z "));
+            divz[6..].parse().expect("Could not parse div z")
+        };
+        result[i].1 = {
+            let addx = lines[4];
+            assert!(addx.starts_with("add x "));
+            addx[6..].parse().expect("Could not parse add x")
+        };
+        result[i].2 = {
+            let addy = lines[14];
+            assert!(addy.starts_with("add y "));
+            addy[6..].parse().expect("Could not parse add y")
+        };
+    }
+
+    result
+}
+
+fn join_to_int(digits: [i32; 14]) -> usize {
+    digits.into_iter().fold(0usize,|acc, d| acc * 10 + d as usize)
 }
 
 fn main() {
@@ -305,5 +299,8 @@ fn main() {
     // let part1 = monad();
     // println!("{:?}", part1);
 
-    max_min_model_num();
+    let (max, min) = max_min_model_num(&extract_constants_from_path("input"));
+
+    println!("Part 1: {}", max);
+    println!("Part 2: {}", min);
 }
