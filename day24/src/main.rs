@@ -193,25 +193,29 @@
 The instructions effectively work with a "polynomial" of base 26. There are 14 very similar sections
 within the program (one for each digit of the model number).
 
-When the input number is valid, each section either increases the degree of the polynomial (by
-multiplying by 26) and adds a new term, or decreases the degree of the polynomial (dividing by 26,
-chopping off any constant term). There are (in my input, and I expect in all inputs) 7 increase and
-7 decrease sections, and the program ends in a decrease - so 'chopping off the constant term' means
-reducing the total to zero in the final section (still assuming the input number is valid).
+Each section may do zero or more of the following things:
+ 1. Decrease the degree of the polynomial (dividing by 26, chopping off any constant degree).
+    Whether or not the decrease happens is determined by a constant in the instructions.
+ 2. Increase the degree of the polynomial and add a new constant term. This will happen iff the
+    section's input is NOT equal to the polynomial's constant term plus another constant (specified
+    in the instructions). The polynomial's constant term comes from a previous section's input plus
+    a constant (specified in that section's instructions). I.e. whether or not the polynomial's
+    degree is increased boils down to whether a pair of inputs have a difference of the sum of two
+    constants, i.e. whether input[a] == input[b] + c + d.
 
-If the input number is _invalid_ then one or ore 'decrease' sections will in fact act as increase
-sections - increasing the degree of the polynomial and adding a constant. In this case, there will
-be more increase sections than decrease sections, and the end result will be non-zero.
+In my (and, I expect, all) input there are 7 sections which decrease the polynomial. In order for
+the final value of z (the value of the polynomial being manipulated) to be 0, those 7 sections must
+NOT also increase the degree of the polynomial, and the other 7 sections must do so. This means the
+increasing and decreasing cancel out (assuming the degree of the polynomial remains >= 0), and the
+final section will drop the final (constant) term, resulting in 0.
 
-Whether a 'decrease' section will decrease or increase the polynomila depends on whether the
-section's input plus a constant is equal to the polynomial's constant term. That constant term is a
-previous section's input plus a different constant. So whether a model number is valid boils down to
-whether pairs of inputs are separated by some constant (input[a] == input[b] + c + d). The pairs
-can be derived via a stack - push the input to the stack for the 'increase' sections, and pop off
-again on the 'decrease' sections.
+This means that for a model number to be valid, the the 'decrease' sections' inputs must be the
+specified difference from the paired section's input. The paired sections can be determined via a
+stack - pushing the input to the stack when increasing the polynomial, popping when decreasing.
 
 Each section of instructions is identical except for three literal numbers:
- 0: 1 or 26, defining increase ("div total by 1") or decrease ("div total by 26") respectively
+ 0: 1 ("div total by 1" - i.e. do nothing) or 26 ("div total by 26" - i.e. decrease the polynomial's
+    degree)
  1: An arbitrary constant
  2: An arbitrary constant
 The required difference between pairs of inputs is "constant 2 from the increase section plus
